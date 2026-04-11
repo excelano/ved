@@ -4,6 +4,8 @@
 // help system. Written in pure-stdlib Rust.
 
 mod address;
+#[allow(dead_code)] // unused until slice 5b wires it to the substitute command
+mod bre;
 mod buffer;
 
 use address::Spec;
