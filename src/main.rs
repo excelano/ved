@@ -250,9 +250,105 @@ fn dispatch(cmd: &str, buf: &mut Buffer) -> Action {
     let first = rest.as_bytes()[0];
     let args = &rest[1..];
     match first {
+        b'g' => run_global(&spec, buf, args, false),
+        b'v' => run_global(&spec, buf, args, true),
         b's' => run_substitute(&spec, buf, args),
         b'w' => run_write(&spec, buf, args),
         _ => Action::Error(format!("unknown command: {rest}")),
+    }
+}
+
+/// Global command: scan the addressed range for lines matching
+/// (or not matching, if `invert` is true) a pattern, then execute
+/// a command on each one. Default address: whole buffer (1,$).
+///
+/// `g/pattern/p` is literally "global regex print" — the ancestor
+/// of the grep command.
+///
+/// Delete is special-cased (reverse iteration to keep line numbers
+/// stable). All other commands dispatch through the normal path.
+fn run_global(spec: &Spec, buf: &mut Buffer, args: &str, invert: bool) -> Action {
+    let args_bytes = args.as_bytes();
+    if args_bytes.is_empty() {
+        return Action::Error("no delimiter".to_string());
+    }
+
+    let delim = args_bytes[0];
+    let after_delim = &args_bytes[1..];
+
+    // Parse pattern: read until unescaped delimiter.
+    let (pattern, rest) = match scan_delimited(after_delim, delim) {
+        Some(r) => r,
+        None => return Action::Error("unterminated pattern".to_string()),
+    };
+
+    // The rest is the command. Empty defaults to "p".
+    let cmd = std::str::from_utf8(rest).unwrap_or("p");
+    let cmd = cmd.trim_start();
+    let cmd = if cmd.is_empty() { "p" } else { cmd };
+
+    // Compile the regex.
+    let re = bre::Regex::compile(&pattern);
+
+    // Resolve the address range (default: whole buffer).
+    let range = match spec.resolve_or_whole(buf) {
+        Ok(r) => r,
+        Err(e) => return Action::Error(e),
+    };
+
+    // Scan and mark matching lines.
+    let mut marked = Vec::new();
+    for n in range.start..=range.end {
+        if let Some(line) = buf.line(n) {
+            let matched = re.find(line.as_bytes()).is_some();
+            if matched != invert {
+                marked.push(n);
+            }
+        }
+    }
+
+    if marked.is_empty() {
+        return Action::Error("no match".to_string());
+    }
+
+    // Delete is special: remove marked lines bottom-to-top so
+    // earlier line numbers stay valid.
+    if cmd == "d" {
+        for &n in marked.iter().rev() {
+            buf.delete_range(n, n);
+        }
+        return Action::Done;
+    }
+
+    // For all other commands: set current to the marked line and
+    // dispatch normally. Works for p, n, s (which don't change
+    // line count) and anything else that operates on current line.
+    let mut output = String::new();
+    for &n in &marked {
+        buf.set_current(n);
+        match dispatch(cmd, buf) {
+            Action::Print(msg) => {
+                if !output.is_empty() {
+                    output.push('\n');
+                }
+                output.push_str(&msg);
+            }
+            Action::Error(msg) => {
+                if !output.is_empty() {
+                    output.push('\n');
+                }
+                output.push_str(&format!("? {msg}"));
+            }
+            Action::Done => {}
+            // Quit and EnterInputMode don't make sense inside g.
+            _ => {}
+        }
+    }
+
+    if output.is_empty() {
+        Action::Done
+    } else {
+        Action::Print(output)
     }
 }
 
