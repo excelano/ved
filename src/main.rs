@@ -16,8 +16,8 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
 
-    let prompt = match parse_args(&args) {
-        Ok(p) => p,
+    let (prompt, filename) = match parse_args(&args) {
+        Ok(r) => r,
         Err(e) => {
             eprintln!("ved: {e}");
             eprintln!("try 'ved --help' for usage information");
@@ -25,13 +25,14 @@ fn main() -> ExitCode {
         }
     };
 
-    run_repl(prompt.as_deref())
+    run_repl(prompt.as_deref(), filename.as_deref())
 }
 
 /// Parse command line arguments.
-/// Returns the prompt string (if any) on success.
-fn parse_args(args: &[String]) -> Result<Option<String>, String> {
+/// Returns (prompt, filename) on success.
+fn parse_args(args: &[String]) -> Result<(Option<String>, Option<String>), String> {
     let mut prompt: Option<String> = None;
+    let mut filename: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
@@ -54,13 +55,16 @@ fn parse_args(args: &[String]) -> Result<Option<String>, String> {
                 println!("ved {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
-            other => {
-                return Err(format!("unknown argument: {other}"));
+            s if s.starts_with('-') => {
+                return Err(format!("unknown option: {s}"));
+            }
+            _ => {
+                filename = Some(arg.clone());
             }
         }
         i += 1;
     }
-    Ok(prompt)
+    Ok((prompt, filename))
 }
 
 fn print_usage() {
@@ -82,7 +86,7 @@ fn print_usage() {
 /// parsed by `dispatch` and the resulting `Action` is applied. In
 /// *input mode* (entered by `a`) every input line goes verbatim
 /// into the buffer until the user types a single `.` on a line.
-fn run_repl(prompt: Option<&str>) -> ExitCode {
+fn run_repl(prompt: Option<&str>, filename: Option<&str>) -> ExitCode {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -94,6 +98,18 @@ fn run_repl(prompt: Option<&str>) -> ExitCode {
     // buffer flips this on and prints a warning instead of quitting.
     // Any other command in between resets it.
     let mut quit_warned = false;
+
+    // If a filename was given on the command line, load it.
+    if let Some(f) = filename {
+        match load_file(f, &mut buffer) {
+            Ok(bytes) => {
+                let _ = writeln!(out, "{bytes}");
+            }
+            Err(e) => {
+                let _ = writeln!(out, "? {e}");
+            }
+        }
+    }
 
     loop {
         // ed shows the prompt only in command mode, never in input
@@ -139,6 +155,9 @@ fn run_repl(prompt: Option<&str>) -> ExitCode {
                     return ExitCode::SUCCESS;
                 }
             }
+            Action::ForceQuit => {
+                return ExitCode::SUCCESS;
+            }
             Action::EnterInputMode => {
                 input_mode = true;
                 quit_warned = false;
@@ -164,6 +183,7 @@ fn run_repl(prompt: Option<&str>) -> ExitCode {
 /// What the REPL should do after handling one input line.
 enum Action {
     Quit,
+    ForceQuit,
     EnterInputMode,
     Done,
     Print(String),
@@ -213,7 +233,7 @@ fn dispatch(cmd: &str, buf: &mut Buffer) -> Action {
     // the front of `quit`.
     match rest {
         "q" | "quit" => return Action::Quit,
-        "a" => {
+        "a" | "append" => {
             // Append after the addressed line (default: current).
             // On an empty buffer, current is 0 and append_after(0)
             // inserts at the start — correct.
@@ -224,7 +244,7 @@ fn dispatch(cmd: &str, buf: &mut Buffer) -> Action {
             }
             return Action::EnterInputMode;
         }
-        "i" => {
+        "i" | "insert" => {
             // Insert before the addressed line (default: current).
             // Implemented as "append after address - 1", so the
             // input-mode loop (which always does append_after) works
@@ -239,9 +259,11 @@ fn dispatch(cmd: &str, buf: &mut Buffer) -> Action {
             }
             return Action::EnterInputMode;
         }
-        "d" => return run_delete(&spec, buf),
-        "p" => return run_print(&spec, buf, false),
-        "n" => return run_print(&spec, buf, true),
+        "d" | "delete" => return run_delete(&spec, buf),
+        "p" | "print" => return run_print(&spec, buf, false),
+        "n" | "number" => return run_print(&spec, buf, true),
+        "H" | "help" => return run_help(),
+        "Q" => return Action::ForceQuit,
         _ => {}
     }
 
@@ -250,6 +272,8 @@ fn dispatch(cmd: &str, buf: &mut Buffer) -> Action {
     let first = rest.as_bytes()[0];
     let args = &rest[1..];
     match first {
+        b'e' => run_edit(buf, args),
+        b'r' => run_read(&spec, buf, args),
         b'g' => run_global(&spec, buf, args, false),
         b'v' => run_global(&spec, buf, args, true),
         b's' => run_substitute(&spec, buf, args),
@@ -352,16 +376,50 @@ fn run_global(spec: &Spec, buf: &mut Buffer, args: &str, invert: bool) -> Action
     }
 }
 
+/// Print a command reference.
+fn run_help() -> Action {
+    Action::Print(
+        "\
+ved commands (addresses shown in brackets are optional):
+
+  [.]a, append       Append text after the addressed line. End with '.'
+  [.]i, insert       Insert text before the addressed line. End with '.'
+  [.,.]d, delete     Delete the addressed lines
+  [.,.]p, print      Print the addressed lines
+  [.,.]n, number     Print with line numbers
+  [.,.]s/re/new/[g]  Substitute: replace regex match in addressed lines
+  [.,.]g/re/cmd      Global: run cmd on lines matching regex
+  [.,.]v/re/cmd      Inverse global: run cmd on lines NOT matching regex
+  [.,.]w [file]      Write addressed lines (default: all) to file
+  q, quit            Quit (warns if buffer modified, repeat to force)
+  H, help            Show this help
+
+Addresses: 1 (line 1), $ (last), . (current), +N/-N (relative), , (all), ; (current to end)
+Regex: . (any char), * (zero or more), ^ $ (anchors), [abc] [^abc] [a-z] (classes)
+       \\(...\\) (capture group), \\1-\\9 (backreference)
+Replacement: & (whole match), \\1-\\9 (group), \\& (literal &)"
+            .to_string(),
+    )
+}
+
 /// Delete the addressed lines. Default address: current line.
-/// Silent on success (ed behavior). Updates current to the line
-/// after the deleted range, or the new last line.
+/// Updates current to the line after the deleted range, or the
+/// new last line.
 fn run_delete(spec: &Spec, buf: &mut Buffer) -> Action {
     let range = match spec.resolve(buf) {
         Ok(r) => r,
         Err(e) => return Action::Error(e),
     };
+    let count = range.end - range.start + 1;
     buf.delete_range(range.start, range.end);
-    Action::Done
+    if count == 1 {
+        Action::Print(format!("deleted line {}", range.start))
+    } else {
+        Action::Print(format!(
+            "deleted {count} lines ({}-{})",
+            range.start, range.end
+        ))
+    }
 }
 
 /// Resolve `spec` against the buffer and emit the corresponding
@@ -389,6 +447,90 @@ fn run_print(spec: &Spec, buf: &mut Buffer, numbered: bool) -> Action {
 
     buf.set_current(range.end);
     Action::Print(output)
+}
+
+/// Load a file into the buffer, appending lines after position
+/// `after` (0 = start of buffer). Sets the filename and returns
+/// the byte count on success.
+fn load_file(filename: &str, buf: &mut Buffer) -> Result<usize, String> {
+    let content = std::fs::read_to_string(filename)
+        .map_err(|e| format!("cannot open {filename}: {e}"))?;
+    let bytes = content.len();
+
+    for line in content.lines() {
+        buf.append_after(buf.len(), line.to_string());
+    }
+    buf.set_filename(filename.to_string());
+    buf.mark_saved();
+
+    Ok(bytes)
+}
+
+/// Edit: replace the buffer with the contents of a file.
+/// Warns if the buffer has unsaved changes (like q does).
+fn run_edit(buf: &mut Buffer, args: &str) -> Action {
+    let filename_arg = args.trim_start();
+
+    let filename = if filename_arg.is_empty() {
+        match buf.filename() {
+            Some(f) => f.to_string(),
+            None => return Action::Error("no current filename".to_string()),
+        }
+    } else {
+        filename_arg.to_string()
+    };
+
+    // Replace the buffer entirely.
+    *buf = Buffer::new();
+    match load_file(&filename, buf) {
+        Ok(bytes) => Action::Print(format!("{bytes}")),
+        Err(e) => Action::Error(e),
+    }
+}
+
+/// Read: append the contents of a file after the addressed line.
+/// Default address: last line ($).
+fn run_read(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
+    let filename_arg = args.trim_start();
+
+    let filename = if filename_arg.is_empty() {
+        match buf.filename() {
+            Some(f) => f.to_string(),
+            None => return Action::Error("no current filename".to_string()),
+        }
+    } else {
+        filename_arg.to_string()
+    };
+
+    // Resolve the insertion point (default: end of buffer).
+    let after = if buf.is_empty() {
+        0
+    } else if spec.is_empty() {
+        buf.len()
+    } else {
+        match spec.resolve(buf) {
+            Ok(r) => r.end,
+            Err(e) => return Action::Error(e),
+        }
+    };
+
+    let content = match std::fs::read_to_string(&filename) {
+        Ok(c) => c,
+        Err(e) => return Action::Error(format!("cannot open {filename}: {e}")),
+    };
+    let bytes = content.len();
+
+    let mut insert_at = after;
+    for line in content.lines() {
+        buf.append_after(insert_at, line.to_string());
+        insert_at += 1;
+    }
+
+    if buf.filename().is_none() {
+        buf.set_filename(filename);
+    }
+
+    Action::Print(format!("{bytes}"))
 }
 
 /// Substitute: apply a regex replacement to the addressed lines.

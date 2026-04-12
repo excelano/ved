@@ -29,14 +29,14 @@ Each slice is a complete working program with one more capability than the previ
 | 2 | Buffer + `a` (append) + `.` + `p` + `,p` | **done** |
 | 3 | Addresses (`1p`, `$p`, `2,4p`) + current-line tracking + `n` (numbered print) | **done** |
 | 4 | `w` (write) and `q` (quit), with double-q dance for unsaved changes | **done** |
-| 5a | BRE regex engine (`src/bre.rs`, hand-written, pure stdlib) | todo |
-| 5b | Substitute: `s/old/new/[g]` wired up to the BRE engine | todo |
-| 6 | `d` (delete) and `i` (insert) | todo |
-| 7 | `g/pattern/cmd` and `v/pattern/cmd` (grep ancestor) | todo |
-| 8 | Long-form command aliases (`append`, `write`, `quit`, etc.) | todo |
-| 9 | Friendly errors + confirmations layer | todo |
-| 10 | `H`/`help` command reference | todo |
-| 11 | Open existing files (`ved filename` argument) | todo |
+| 5a | BRE regex engine (`src/bre.rs`, hand-written, pure stdlib) | **done** |
+| 5b | Substitute: `s/old/new/[g]` wired up to the BRE engine | **done** |
+| 6 | `d` (delete) and `i` (insert) | **done** |
+| 7 | `g/pattern/cmd` and `v/pattern/cmd` (grep ancestor) | **done** |
+| 8 | Long-form command aliases (`append`, `write`, `quit`, etc.) | **done** |
+| 9 | Friendly errors + confirmations + `Q` (force quit) | **done** |
+| 10 | `H`/`help` command reference | **done** |
+| 11 | Open existing files, `e` (edit), `r` (read) | **done** |
 
 ## Build and run
 
