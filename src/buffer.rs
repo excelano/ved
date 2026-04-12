@@ -91,4 +91,11 @@ impl Buffer {
     pub fn set_filename(&mut self, name: String) {
         self.filename = Some(name);
     }
+
+    /// Replace the content of 1-indexed line `n`. Marks the buffer
+    /// as modified. Panics if `n` is out of range.
+    pub fn replace_line(&mut self, n: usize, content: String) {
+        self.lines[n - 1] = content;
+        self.modified = true;
+    }
 }

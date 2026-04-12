@@ -388,6 +388,59 @@ fn atom_matches(atom: &Atom, byte: u8) -> bool {
     }
 }
 
+// ── Replacement expansion ────────────────────────────────────
+
+/// Expand a replacement string using match results.
+///
+/// Handles ed's replacement conventions:
+///   - `&` is replaced with the entire matched text
+///   - `\1`-`\9` are replaced with captured group contents
+///   - `\&` is a literal ampersand
+///   - `\\` is a literal backslash
+///   - Everything else is literal
+pub fn expand_replacement(replacement: &[u8], m: &Match, text: &[u8]) -> Vec<u8> {
+    let mut result = Vec::new();
+    let mut i = 0;
+
+    while i < replacement.len() {
+        match replacement[i] {
+            b'&' => {
+                result.extend_from_slice(&text[m.start..m.end]);
+                i += 1;
+            }
+            b'\\' if i + 1 < replacement.len() => {
+                match replacement[i + 1] {
+                    b'&' => {
+                        result.push(b'&');
+                        i += 2;
+                    }
+                    b'\\' => {
+                        result.push(b'\\');
+                        i += 2;
+                    }
+                    c @ b'1'..=b'9' => {
+                        let n = (c - b'0') as usize;
+                        if let Some((s, e)) = m.group(n) {
+                            result.extend_from_slice(&text[s..e]);
+                        }
+                        i += 2;
+                    }
+                    _ => {
+                        result.push(replacement[i]);
+                        i += 1;
+                    }
+                }
+            }
+            c => {
+                result.push(c);
+                i += 1;
+            }
+        }
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -819,5 +872,58 @@ mod tests {
         // \([a-z]\)\1 finds a repeated lowercase letter
         assert!(has_match(b"\\([a-z]\\)\\1", b"xaabbx"));
         assert!(!has_match(b"^\\([a-z]\\)\\1$", b"ab"));
+    }
+
+    // ── Replacement expansion tests ──────────────────────────
+
+    #[test]
+    fn replace_literal() {
+        let text = b"hello world";
+        let m = Regex::compile(b"world").find(text).unwrap();
+        assert_eq!(expand_replacement(b"earth", &m, text), b"earth");
+    }
+
+    #[test]
+    fn replace_ampersand_whole_match() {
+        let text = b"hello world";
+        let m = Regex::compile(b"world").find(text).unwrap();
+        assert_eq!(expand_replacement(b"[&]", &m, text), b"[world]");
+    }
+
+    #[test]
+    fn replace_escaped_ampersand() {
+        let text = b"hello";
+        let m = Regex::compile(b"hello").find(text).unwrap();
+        assert_eq!(expand_replacement(b"\\&", &m, text), b"&");
+    }
+
+    #[test]
+    fn replace_backref_group() {
+        let text = b"abcd";
+        let m = Regex::compile(b"^\\(ab\\)\\(cd\\)$").find(text).unwrap();
+        assert_eq!(expand_replacement(b"\\2-\\1", &m, text), b"cd-ab");
+    }
+
+    #[test]
+    fn replace_backref_uncaptured_vanishes() {
+        let text = b"abc";
+        let m = Regex::compile(b"^\\(abc\\)$").find(text).unwrap();
+        // \2 was never captured, so it expands to nothing
+        assert_eq!(expand_replacement(b"\\1-\\2", &m, text), b"abc-");
+    }
+
+    #[test]
+    fn replace_escaped_backslash() {
+        let text = b"hello";
+        let m = Regex::compile(b"hello").find(text).unwrap();
+        assert_eq!(expand_replacement(b"a\\\\b", &m, text), b"a\\b");
+    }
+
+    #[test]
+    fn replace_ampersand_with_groups() {
+        let text = b"xabcy";
+        let m = Regex::compile(b"x\\(abc\\)y").find(text).unwrap();
+        // & is the whole match "xabcy", \1 is just "abc"
+        assert_eq!(expand_replacement(b"&-\\1", &m, text), b"xabcy-abc");
     }
 }

@@ -4,7 +4,6 @@
 // help system. Written in pure-stdlib Rust.
 
 mod address;
-#[allow(dead_code)] // unused until slice 5b wires it to the substitute command
 mod bre;
 mod buffer;
 
@@ -221,6 +220,7 @@ fn dispatch(cmd: &str, buf: &mut Buffer) -> Action {
     let first = rest.as_bytes()[0];
     let args = &rest[1..];
     match first {
+        b's' => run_substitute(&spec, buf, args),
         b'w' => run_write(&spec, buf, args),
         _ => Action::Error(format!("unknown command: {rest}")),
     }
@@ -251,6 +251,170 @@ fn run_print(spec: &Spec, buf: &mut Buffer, numbered: bool) -> Action {
 
     buf.set_current(range.end);
     Action::Print(output)
+}
+
+/// Substitute: apply a regex replacement to the addressed lines.
+/// The `args` string is everything after the `s` letter, e.g.
+/// `/old/new/g`. The first character is the delimiter.
+fn run_substitute(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
+    let args = args.as_bytes();
+
+    if args.is_empty() {
+        return Action::Error("no delimiter".to_string());
+    }
+
+    let delim = args[0];
+    let args = &args[1..]; // skip delimiter
+
+    // Parse pattern: read until unescaped delimiter.
+    let (pattern, rest) = match scan_delimited(args, delim) {
+        Some(r) => r,
+        None => return Action::Error("unterminated pattern".to_string()),
+    };
+
+    // Parse replacement: read until unescaped delimiter.
+    let (replacement, rest) = match scan_delimited(rest, delim) {
+        Some(r) => r,
+        None => return Action::Error("unterminated replacement".to_string()),
+    };
+
+    // Parse flags.
+    let global = rest.contains(&b'g');
+
+    // Compile the pattern.
+    let re = bre::Regex::compile(&pattern);
+
+    // Resolve the address range (default: current line).
+    let range = match spec.resolve(buf) {
+        Ok(r) => r,
+        Err(e) => return Action::Error(e),
+    };
+
+    let mut last_modified_line = None;
+
+    for n in range.start..=range.end {
+        let line = match buf.line(n) {
+            Some(l) => l.to_string(),
+            None => continue,
+        };
+        let line_bytes = line.as_bytes();
+
+        let new_line = if global {
+            substitute_all(&re, line_bytes, &replacement)
+        } else {
+            substitute_first(&re, line_bytes, &replacement)
+        };
+
+        if let Some(new_bytes) = new_line {
+            let new_str = String::from_utf8_lossy(&new_bytes).into_owned();
+            buf.replace_line(n, new_str);
+            last_modified_line = Some(n);
+        }
+    }
+
+    match last_modified_line {
+        Some(n) => {
+            buf.set_current(n);
+            match buf.line(n) {
+                Some(s) => Action::Print(s.to_string()),
+                None => Action::Error("invalid address".to_string()),
+            }
+        }
+        None => Action::Error("no match".to_string()),
+    }
+}
+
+/// Scan a delimiter-terminated field, handling backslash escapes.
+/// Returns the field content (with escapes preserved for the BRE
+/// engine) and the remainder after the closing delimiter.
+fn scan_delimited(input: &[u8], delim: u8) -> Option<(Vec<u8>, &[u8])> {
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i < input.len() {
+        if input[i] == delim {
+            return Some((result, &input[i + 1..]));
+        }
+        if input[i] == b'\\' && i + 1 < input.len() {
+            if input[i + 1] == delim {
+                // Escaped delimiter: include just the delimiter
+                result.push(delim);
+                i += 2;
+            } else {
+                // Other escape: pass through as-is for the BRE
+                // engine or replacement expander to interpret.
+                result.push(input[i]);
+                result.push(input[i + 1]);
+                i += 2;
+            }
+        } else {
+            result.push(input[i]);
+            i += 1;
+        }
+    }
+    None // no closing delimiter found
+}
+
+/// Replace the first match in `text`. Returns None if no match.
+fn substitute_first(
+    re: &bre::Regex,
+    text: &[u8],
+    replacement: &[u8],
+) -> Option<Vec<u8>> {
+    let m = re.find(text)?;
+    let mut result = Vec::new();
+    result.extend_from_slice(&text[..m.start]);
+    result.extend_from_slice(&bre::expand_replacement(replacement, &m, text));
+    result.extend_from_slice(&text[m.end..]);
+    Some(result)
+}
+
+/// Replace all non-overlapping matches in `text`. Returns None
+/// if no match was found at all.
+fn substitute_all(
+    re: &bre::Regex,
+    text: &[u8],
+    replacement: &[u8],
+) -> Option<Vec<u8>> {
+    let mut result = Vec::new();
+    let mut pos = 0;
+    let mut matched = false;
+
+    while pos <= text.len() {
+        match re.find(&text[pos..]) {
+            Some(m) => {
+                matched = true;
+                let abs_start = pos + m.start;
+                let abs_end = pos + m.end;
+                result.extend_from_slice(&text[pos..abs_start]);
+                // For expand_replacement, the Match positions are
+                // relative to the slice we searched, but we need
+                // them relative to that same slice for text lookup.
+                result.extend_from_slice(
+                    &bre::expand_replacement(replacement, &m, &text[pos..]),
+                );
+                // Advance past the match. If the match was empty,
+                // advance by one byte to avoid an infinite loop.
+                if abs_end == abs_start {
+                    if pos < text.len() {
+                        result.push(text[pos]);
+                    }
+                    pos = abs_start + 1;
+                } else {
+                    pos = abs_end;
+                }
+            }
+            None => {
+                result.extend_from_slice(&text[pos..]);
+                break;
+            }
+        }
+    }
+
+    if matched {
+        Some(result)
+    } else {
+        None
+    }
 }
 
 /// Write the addressed range to a file. Empty spec defaults to the
