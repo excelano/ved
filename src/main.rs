@@ -143,6 +143,9 @@ fn run_repl(prompt: Option<&str>) -> ExitCode {
                 input_mode = true;
                 quit_warned = false;
             }
+            Action::Done => {
+                quit_warned = false;
+            }
             Action::Print(msg) => {
                 let _ = writeln!(out, "{msg}");
                 quit_warned = false;
@@ -162,6 +165,7 @@ fn run_repl(prompt: Option<&str>) -> ExitCode {
 enum Action {
     Quit,
     EnterInputMode,
+    Done,
     Print(String),
     Error(String),
 }
@@ -209,7 +213,33 @@ fn dispatch(cmd: &str, buf: &mut Buffer) -> Action {
     // the front of `quit`.
     match rest {
         "q" | "quit" => return Action::Quit,
-        "a" => return Action::EnterInputMode,
+        "a" => {
+            // Append after the addressed line (default: current).
+            // On an empty buffer, current is 0 and append_after(0)
+            // inserts at the start — correct.
+            if !buf.is_empty() {
+                if let Ok(r) = spec.resolve(buf) {
+                    buf.set_current(r.end);
+                }
+            }
+            return Action::EnterInputMode;
+        }
+        "i" => {
+            // Insert before the addressed line (default: current).
+            // Implemented as "append after address - 1", so the
+            // input-mode loop (which always does append_after) works
+            // unchanged. On an empty buffer or address 1, current
+            // becomes 0 (the before-first-line sentinel).
+            if !buf.is_empty() {
+                let addr = match spec.resolve(buf) {
+                    Ok(r) => r.end,
+                    Err(e) => return Action::Error(e),
+                };
+                buf.set_current(addr.saturating_sub(1));
+            }
+            return Action::EnterInputMode;
+        }
+        "d" => return run_delete(&spec, buf),
         "p" => return run_print(&spec, buf, false),
         "n" => return run_print(&spec, buf, true),
         _ => {}
@@ -224,6 +254,18 @@ fn dispatch(cmd: &str, buf: &mut Buffer) -> Action {
         b'w' => run_write(&spec, buf, args),
         _ => Action::Error(format!("unknown command: {rest}")),
     }
+}
+
+/// Delete the addressed lines. Default address: current line.
+/// Silent on success (ed behavior). Updates current to the line
+/// after the deleted range, or the new last line.
+fn run_delete(spec: &Spec, buf: &mut Buffer) -> Action {
+    let range = match spec.resolve(buf) {
+        Ok(r) => r,
+        Err(e) => return Action::Error(e),
+    };
+    buf.delete_range(range.start, range.end);
+    Action::Done
 }
 
 /// Resolve `spec` against the buffer and emit the corresponding

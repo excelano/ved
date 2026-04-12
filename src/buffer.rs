@@ -98,4 +98,19 @@ impl Buffer {
         self.lines[n - 1] = content;
         self.modified = true;
     }
+
+    /// Delete lines from `start` to `end` (1-indexed, inclusive).
+    /// Updates current to the line after the deleted range, or the
+    /// new last line, or 0 if the buffer is now empty.
+    pub fn delete_range(&mut self, start: usize, end: usize) {
+        self.lines.drain((start - 1)..end);
+        self.modified = true;
+        if self.lines.is_empty() {
+            self.current = 0;
+        } else if start <= self.lines.len() {
+            self.current = start;
+        } else {
+            self.current = self.lines.len();
+        }
+    }
 }
