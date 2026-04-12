@@ -2,5 +2,11 @@
 name = "ved"
 version = "0.1.0"
 edition = "2024"
+description = "The verbose ed — a drop-in compatible ed clone with friendly errors and a built-in help system"
+license = "MIT"
+authors = ["David M. Anderson"]
+repository = "https://github.com/anderix/nursery"
+keywords = ["ed", "editor", "line-editor", "regex", "bre"]
+categories = ["command-line-utilities", "text-editors"]
 
 [dependencies]
