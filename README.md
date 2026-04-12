@@ -18,8 +18,9 @@ cargo build --release
 The binary is at `target/release/ved`. To install system-wide:
 
 ```sh
-sudo make install            # installs to /usr/local/bin
-sudo make install PREFIX=/usr  # or specify a different prefix
+make build                        # build as your user (needs cargo)
+sudo make install                 # copy binary to /usr/local/bin
+sudo make install PREFIX=/usr     # or specify a different prefix
 ```
 
 To run without installing:

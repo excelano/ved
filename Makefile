@@ -8,7 +8,8 @@ build:
 test:
 	cargo test
 
-install: build
+install:
+	@test -f target/release/ved || { echo "Run 'make build' first."; exit 1; }
 	install -d $(PREFIX)/bin
 	install -m 755 target/release/ved $(PREFIX)/bin/ved
 
