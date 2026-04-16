@@ -1,0 +1,300 @@
+<!--
+    ved — an introduction
+    Author: David M. Anderson
+    Built with AI assistance (Claude, Anthropic)
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ved — an introduction</title>
+    <link rel="stylesheet" href="brand.css">
+    <link rel="stylesheet" href="axe.css">
+    <script src="theme.js"></script>
+</head>
+<body>
+
+<nav>
+    <ul>
+        <li><a href="#">ved</a></li>
+        <li><a href="#starting">Starting</a></li>
+        <li><a href="#append">Adding</a></li>
+        <li><a href="#print">Printing</a></li>
+        <li><a href="#addresses">Addresses</a></li>
+        <li><a href="#editing">Editing</a></li>
+        <li><a href="#substitute">Substitute</a></li>
+        <li><a href="#global">Global</a></li>
+        <li><a href="#files">Files</a></li>
+        <li><a href="#short">Short Commands</a></li>
+        <li class="nav-right"><button class="theme-toggle" aria-label="Toggle theme">&#9788;</button></li>
+    </ul>
+</nav>
+
+<main>
+<article>
+
+    <header>
+        <h1>ved: an introduction</h1>
+        <p>ved is a <em>line editor</em>. You work with text one command at a time, not by moving a cursor. If you've never used one, that idea might sound strange. It is also the idea behind nearly every Unix text tool: <code>grep</code>, <code>sed</code>, <code>awk</code>, and the modal commands in <code>vim</code> are all direct descendants of this single editor's design.</p>
+
+        <p>ved is a clone of <a href="https://www.gnu.org/software/ed/">ed</a>, the original Unix line editor, but with one crucial difference: where ed speaks in cryptic single letters and responds to errors with a single question mark, ved uses full English words, gives you friendly error messages, and has a built-in help system. When you are comfortable with ved, switching to ed is a matter of using shorter commands. This page will get you there.</p>
+    </header>
+
+
+    <section id="starting">
+        <h2>Starting a session</h2>
+
+        <p>Launch ved from the command line. If you give it a filename, it loads the file into its buffer (its in-memory workspace) and shows you the file size in bytes.</p>
+
+<pre><code>$ ved -p '* ' notes.txt
+47
+* </code></pre>
+
+        <p>The <code>-p '* '</code> flag sets a prompt, which ved shows whenever it is ready for a command. Without it, ved is silent between commands — a deliberate ed compatibility choice that tends to confuse newcomers. Until you are comfortable, use the prompt.</p>
+
+        <p>Without a filename, ved starts with an empty buffer:</p>
+
+<pre><code>$ ved -p '* '
+* </code></pre>
+
+        <aside>
+            <strong>Leaving ved:</strong> type <kbd>quit</kbd>. If you have unsaved changes, ved will warn you once — type <kbd>quit</kbd> a second time to exit anyway, or <kbd>Q</kbd> (capital) to exit without warnings.
+        </aside>
+    </section>
+
+
+    <section id="append">
+        <h2>Adding text with append</h2>
+
+        <p>The <code>append</code> command enters a special <em>input mode</em>. Every line you type goes straight into the buffer until you end input mode by typing a single period on its own line.</p>
+
+<pre><code>* append
+The quick brown fox
+jumps over the lazy dog
+.
+* </code></pre>
+
+        <p>After the period, you're back in command mode and the prompt returns. The buffer now contains two lines.</p>
+    </section>
+
+
+    <section id="print">
+        <h2>Seeing what you have</h2>
+
+        <p>The <code>print</code> command shows a line from the buffer. By itself, it prints the <em>current line</em> — the last line you touched.</p>
+
+<pre><code>* print
+jumps over the lazy dog
+* </code></pre>
+
+        <p>To see more than one line, give <code>print</code> an address range. A comma by itself is shorthand for "all lines":</p>
+
+<pre><code>* ,print
+The quick brown fox
+jumps over the lazy dog
+* </code></pre>
+
+        <p>If you want line numbers alongside the text, use <code>number</code> instead of <code>print</code>:</p>
+
+<pre><code>* ,number
+1	The quick brown fox
+2	jumps over the lazy dog
+* </code></pre>
+    </section>
+
+
+    <section id="addresses">
+        <h2>Addresses</h2>
+
+        <p>Most ved commands can take an address or a range of addresses, telling the command which lines to operate on. The defaults vary by command, but the address syntax is the same everywhere.</p>
+
+        <table>
+            <thead>
+                <tr><th>Address</th><th>Meaning</th></tr>
+            </thead>
+            <tbody>
+                <tr><td><code>5</code></td><td>Line 5</td></tr>
+                <tr><td><code>.</code></td><td>The current line</td></tr>
+                <tr><td><code>$</code></td><td>The last line</td></tr>
+                <tr><td><code>+3</code></td><td>Three lines after the current line</td></tr>
+                <tr><td><code>-1</code></td><td>One line before the current line</td></tr>
+                <tr><td><code>2,7</code></td><td>Lines 2 through 7</td></tr>
+                <tr><td><code>,</code></td><td>Every line (shorthand for <code>1,$</code>)</td></tr>
+                <tr><td><code>;</code></td><td>From current to last (shorthand for <code>.,$</code>)</td></tr>
+            </tbody>
+        </table>
+
+        <p>So <code>3print</code> prints line 3, <code>2,5print</code> prints lines 2 through 5, and <code>$print</code> prints the last line. A bare address with no command letter jumps to that line and prints it:</p>
+
+<pre><code>* 1
+The quick brown fox
+* $
+jumps over the lazy dog
+* </code></pre>
+
+        <p>Just pressing Enter on an empty line advances one line and prints it, which is how you walk through a file.</p>
+    </section>
+
+
+    <section id="editing">
+        <h2>Editing: insert, append, delete</h2>
+
+        <p>You already know <code>append</code>, which adds lines <em>after</em> an address. Its sibling is <code>insert</code>, which adds lines <em>before</em> an address. Both enter input mode, and both end with a period.</p>
+
+<pre><code>* 1insert
+ONCE UPON A TIME:
+.
+* ,number
+1	ONCE UPON A TIME:
+2	The quick brown fox
+3	jumps over the lazy dog
+* </code></pre>
+
+        <p>The <code>delete</code> command removes the addressed lines and confirms what happened:</p>
+
+<pre><code>* 1delete
+deleted line 1
+* ,number
+1	The quick brown fox
+2	jumps over the lazy dog
+* </code></pre>
+
+        <p>A range works the same way. <code>2,4delete</code> removes three lines, reports <code>deleted 3 lines (2-4)</code>, and leaves the buffer one step smaller.</p>
+    </section>
+
+
+    <section id="substitute">
+        <h2>Search and replace: substitute</h2>
+
+        <p>The <code>s</code> command replaces text matching a pattern. Its syntax has three slashes: the pattern, the replacement, and an optional <code>g</code> flag for "replace every occurrence on the line, not just the first."</p>
+
+<pre><code>* 1s/quick/slow/
+The slow brown fox
+* 1s/o/O/g
+The slOw brOwn fOx
+* </code></pre>
+
+        <p>The pattern is a <em>regular expression</em>. In ved's flavor (POSIX Basic Regular Expressions), the useful building blocks are:</p>
+
+        <table>
+            <thead>
+                <tr><th>Symbol</th><th>Matches</th></tr>
+            </thead>
+            <tbody>
+                <tr><td><code>.</code></td><td>Any single character</td></tr>
+                <tr><td><code>*</code></td><td>Zero or more of the preceding element</td></tr>
+                <tr><td><code>^</code></td><td>Start of line</td></tr>
+                <tr><td><code>$</code></td><td>End of line</td></tr>
+                <tr><td><code>[abc]</code></td><td>Any one of a, b, or c</td></tr>
+                <tr><td><code>[^abc]</code></td><td>Anything except a, b, or c</td></tr>
+                <tr><td><code>[a-z]</code></td><td>Any lowercase letter</td></tr>
+                <tr><td><code>\(...\)</code></td><td>Capturing group (remembered for later)</td></tr>
+                <tr><td><code>\1</code> to <code>\9</code></td><td>Refer back to a captured group</td></tr>
+            </tbody>
+        </table>
+
+        <p>In the replacement, <code>&amp;</code> stands for the whole match and <code>\1</code> through <code>\9</code> stand for captured groups. So you can rearrange pieces of matched text:</p>
+
+<pre><code>* 1s/\(brown\) \(fox\)/\2 the \1 one/
+The slOw fox the brOwn one
+* </code></pre>
+
+        <p>An address range applies the substitution to each line in turn. <code>1,$s/old/new/g</code> replaces every occurrence of "old" with "new" throughout the entire buffer.</p>
+    </section>
+
+
+    <section id="global">
+        <h2>Global: run a command on every matching line</h2>
+
+        <p>The <code>g</code> command takes a pattern and another command, and runs that command on every line in the buffer matching the pattern. Its most famous form is <code>g/pattern/print</code> — literally "global regex print," which is where the standalone <code>grep</code> command got its name.</p>
+
+<pre><code>* ,number
+1	apple pie
+2	banana bread
+3	cherry cake
+4	blueberry muffin
+5	avocado toast
+* g/b/print
+banana bread
+blueberry muffin
+* g/b/number
+2	banana bread
+4	blueberry muffin
+* </code></pre>
+
+        <p>The inner command can be anything. <code>g/pattern/delete</code> removes every matching line. <code>g/pattern/s/old/new/g</code> substitutes only on matching lines.</p>
+
+        <p>The <code>v</code> command is the inverse: it operates on every line that does <em>not</em> match the pattern. Useful for filtering:</p>
+
+<pre><code>* v/b/print
+apple pie
+cherry cake
+avocado toast
+* </code></pre>
+    </section>
+
+
+    <section id="files">
+        <h2>Working with files</h2>
+
+        <p>Three commands move text between the buffer and the disk:</p>
+
+        <dl>
+            <dt><code>write</code> (or <code>write filename</code>)</dt>
+            <dd>Writes the buffer to a file. Without a filename, it writes back to whatever file you opened or most recently wrote. Confirms with the byte count.</dd>
+
+            <dt><code>edit filename</code></dt>
+            <dd>Replaces the buffer with the contents of a file. You lose whatever was in the buffer, so save first if you care about it.</dd>
+
+            <dt><code>read filename</code> (or <code>Nread filename</code>)</dt>
+            <dd>Inserts the contents of a file into the buffer after the addressed line (default: the end). Useful for concatenating files.</dd>
+        </dl>
+
+<pre><code>* write notes.txt
+wrote 37 bytes to notes.txt
+* </code></pre>
+
+        <p>Any time you need a reminder of what's available, type <code>help</code> and ved will print a summary of every command, address form, and regex symbol it understands.</p>
+    </section>
+
+
+    <section id="short">
+        <h2>Going faster: the short commands</h2>
+
+        <p>Every command you have learned also has a short form — a single letter. When you use the short forms, you are writing ed. ved will still be running, but the commands you type will work without change on real ed on any Unix system.</p>
+
+        <table>
+            <caption>Verbose commands and their short equivalents</caption>
+            <thead>
+                <tr><th>Verbose</th><th>Short</th><th>What it does</th></tr>
+            </thead>
+            <tbody>
+                <tr><td><code>append</code></td><td><code>a</code></td><td>Add lines after an address</td></tr>
+                <tr><td><code>insert</code></td><td><code>i</code></td><td>Add lines before an address</td></tr>
+                <tr><td><code>delete</code></td><td><code>d</code></td><td>Delete addressed lines</td></tr>
+                <tr><td><code>print</code></td><td><code>p</code></td><td>Print addressed lines</td></tr>
+                <tr><td><code>number</code></td><td><code>n</code></td><td>Print with line numbers</td></tr>
+                <tr><td><code>quit</code></td><td><code>q</code></td><td>Quit (warns on unsaved changes)</td></tr>
+                <tr><td><code>help</code></td><td><code>H</code></td><td>Print the command reference</td></tr>
+            </tbody>
+        </table>
+
+        <p>The commands that already use delimiters — <code>s/old/new/</code>, <code>g/pattern/cmd</code>, <code>v/pattern/cmd</code>, <code>w filename</code>, <code>e filename</code>, <code>r filename</code> — have no long form. They are single letters in both ved and ed.</p>
+
+        <p>That is the whole deal. Every skill you just picked up transfers directly to the editor that's been on every Unix system since 1969. If you ever find yourself on a stripped-down server with no <code>vim</code> or <code>nano</code>, ed will be there. And now you know how to use it.</p>
+
+        <aside>
+            <strong>Keep exploring:</strong> the best way to learn is to open a text file in ved and start changing it. Try <code>g/^$/delete</code> to remove blank lines, or <code>,s/  */ /g</code> to collapse runs of spaces. Regex is hard to write cold, but with ved's instant feedback you can build the pattern by trial and error.
+        </aside>
+    </section>
+
+</article>
+</main>
+
+<footer>
+    <p>ved is MIT-licensed and lives at <a href="https://github.com/anderix/ved">github.com/anderix/ved</a>.</p>
+</footer>
+
+</body>
+</html>
