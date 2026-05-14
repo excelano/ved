@@ -11,30 +11,18 @@ ed's one-character error messages and silent operations make it notoriously hard
 The fastest path on Linux or macOS is the prebuilt-binary installer:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/excelano/ved/main/install.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/excelano/ved/releases/latest/download/ved-installer.sh | sh
 ```
 
 On Windows, in PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/excelano/ved/main/install.ps1 | iex
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/excelano/ved/releases/latest/download/ved-installer.ps1 | iex"
 ```
 
-The installer downloads the right tarball for your platform from the GitHub release, verifies its checksum, and drops the binary into `~/.cargo/bin` (or the equivalent on Windows). Releases also ship raw tarballs (`ved-*.tar.xz` / `.zip`) for manual installation.
+The installer downloads the right tarball for your platform from the GitHub release, verifies its checksum, and drops the binary into `~/.cargo/bin` (or the equivalent on Windows). If `ved` isn't found on your `PATH` after installation, ensure `~/.cargo/bin` is on it. Releases also ship raw tarballs (`ved-*.tar.xz` / `.zip`) for manual installation.
 
-## Uninstall
-
-To remove ved later, run the matching uninstall one-liner:
-
-```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/excelano/ved/main/uninstall.sh | sh
-```
-
-```powershell
-irm https://raw.githubusercontent.com/excelano/ved/main/uninstall.ps1 | iex
-```
-
-ved stores nothing on disk besides its own binary, so this is the entire cleanup.
+To uninstall, remove the binary: `rm ~/.cargo/bin/ved`. ved stores nothing else on disk.
 
 ## Build from source
 
