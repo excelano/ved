@@ -6,7 +6,23 @@ A drop-in compatible clone of [ed](https://www.gnu.org/software/ed/), the origin
 
 ed's one-character error messages and silent operations make it notoriously hard to learn. ved keeps ed's interface and behavior but tells you what happened: `deleted 3 lines (2-4)` instead of silence, `? no match` instead of `?`, and `help` prints a command reference without leaving the editor. If you already know ed, ved works exactly the same. If you're learning, ved explains what's going on.
 
-## Build and install
+## Install
+
+The fastest path on Linux or macOS is the prebuilt-binary installer:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/excelano/ved/releases/latest/download/ved-installer.sh | sh
+```
+
+On Windows, in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/excelano/ved/releases/latest/download/ved-installer.ps1 | iex"
+```
+
+The installer downloads the right tarball for your platform from the GitHub release, verifies its checksum, and drops the binary into `~/.cargo/bin` (or the equivalent on Windows). Releases also ship raw tarballs (`ved-*.tar.xz` / `.zip`) for manual installation.
+
+## Build from source
 
 ved requires only a Rust toolchain (1.85+ for edition 2024). No external crates, no C dependencies, no runtime.
 
