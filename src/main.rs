@@ -259,6 +259,21 @@ fn dispatch(cmd: &str, buf: &mut Buffer) -> Action {
             }
             return Action::EnterInputMode;
         }
+        "c" | "change" => {
+            // Change: delete the addressed range, then enter input
+            // mode positioned to append where the deleted range
+            // started. Equivalent to `d` followed by `i` at the same
+            // address, in one command. On an empty buffer, resolve
+            // errors out — there's nothing to change.
+            let range = match spec.resolve(buf) {
+                Ok(r) => r,
+                Err(e) => return Action::Error(e),
+            };
+            let start = range.start;
+            buf.delete_range(range.start, range.end);
+            buf.set_current(start.saturating_sub(1));
+            return Action::EnterInputMode;
+        }
         "d" | "delete" => return run_delete(&spec, buf),
         "p" | "print" => return run_print(&spec, buf, false),
         "n" | "number" => return run_print(&spec, buf, true),
@@ -384,6 +399,7 @@ ved commands (addresses shown in brackets are optional):
 
   [.]a, append       Append text after the addressed line. End with '.'
   [.]i, insert       Insert text before the addressed line. End with '.'
+  [.,.]c, change     Replace the addressed lines with new text. End with '.'
   [.,.]d, delete     Delete the addressed lines
   [.,.]p, print      Print the addressed lines
   [.,.]n, number     Print with line numbers

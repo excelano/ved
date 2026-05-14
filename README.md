@@ -72,6 +72,7 @@ Goodbye world
 |---|---|---|
 | `[.]a` | `append` | Append text after the addressed line (end with `.`) |
 | `[.]i` | `insert` | Insert text before the addressed line (end with `.`) |
+| `[.,.]c` | `change` | Replace the addressed lines with new text (end with `.`) |
 | `[.,.]d` | `delete` | Delete the addressed lines |
 | `[.,.]p` | `print` | Print the addressed lines |
 | `[.,.]n` | `number` | Print with line numbers |
