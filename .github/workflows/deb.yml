@@ -1,0 +1,38 @@
+name: deb
+
+# Build .deb packages and attach them to a release.
+#
+# Runs after cargo-dist (release.yml) has created the GitHub release and
+# uploaded its tarballs. This workflow adds .deb files for amd64 and arm64
+# as additional release assets so the excelano-apt repository can pick them
+# up.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: install cargo-deb
+        run: cargo install cargo-deb --locked
+      - name: build .deb
+        run: cargo deb
+      - name: upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" target/debian/*.deb
