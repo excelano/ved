@@ -11,6 +11,23 @@ categories = ["command-line-utilities", "text-editors"]
 
 [dependencies]
 
+[package.metadata.deb]
+maintainer = "David M. Anderson <david.anderson@excelano.com>"
+extended-description = """
+ved is a drop-in compatible clone of ed, the original Unix line editor, written
+in pure-stdlib Rust. It adds friendly error messages, command confirmations,
+long-form command aliases, and a built-in help reference while preserving
+strict compatibility so any script written for real ed runs against ved
+unchanged. Full tutorial at https://excelano.github.io/ved/."""
+section = "editors"
+priority = "optional"
+depends = "libc6, libgcc-s1"
+assets = [
+    ["target/release/ved", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/ved/README.md", "644"],
+    ["LICENSE", "usr/share/doc/ved/copyright", "644"],
+]
+
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"
