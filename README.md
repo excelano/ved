@@ -26,6 +26,17 @@ The installer downloads the right tarball for your platform from the GitHub rele
 
 To uninstall, remove the binary: `rm ~/.cargo/bin/ved`. ved stores nothing else on disk.
 
+### Debian and Ubuntu
+
+Install from the [Excelano apt repository](https://excelano.com/apt/), so `apt upgrade` keeps it current:
+
+```sh
+curl -fsSL https://excelano.com/apt/setup.sh | sudo sh
+sudo apt install ved
+```
+
+The apt package is currently amd64 only; arm64 ships with the next release. On arm64, use the prebuilt installer above.
+
 ## Build from source
 
 ved requires only a Rust toolchain (1.85+ for edition 2024). No external crates, no C dependencies, no runtime.
