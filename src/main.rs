@@ -102,8 +102,11 @@ fn run_repl(prompt: Option<&str>, filename: Option<&str>) -> ExitCode {
     // If a filename was given on the command line, load it.
     if let Some(f) = filename {
         match load_file(f, &mut buffer) {
-            Ok(bytes) => {
+            Ok(LoadOutcome::Loaded(bytes)) => {
                 let _ = writeln!(out, "{bytes}");
+            }
+            Ok(LoadOutcome::NewFile) => {
+                let _ = writeln!(out, "{f}: new file");
             }
             Err(e) => {
                 let _ = writeln!(out, "? {e}");
@@ -468,9 +471,23 @@ fn run_print(spec: &Spec, buf: &mut Buffer, numbered: bool) -> Action {
 /// Load a file into the buffer, appending lines after position
 /// `after` (0 = start of buffer). Sets the filename and returns
 /// the byte count on success.
-fn load_file(filename: &str, buf: &mut Buffer) -> Result<usize, String> {
-    let content = std::fs::read_to_string(filename)
-        .map_err(|e| format!("cannot open {filename}: {e}"))?;
+/// What `load_file` did. A missing file is not an error: ed remembers
+/// the name so a later `w` creates it, so we report it distinctly.
+enum LoadOutcome {
+    Loaded(usize),
+    NewFile,
+}
+
+fn load_file(filename: &str, buf: &mut Buffer) -> Result<LoadOutcome, String> {
+    let content = match std::fs::read_to_string(filename) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            buf.set_filename(filename.to_string());
+            buf.mark_saved();
+            return Ok(LoadOutcome::NewFile);
+        }
+        Err(e) => return Err(format!("cannot open {filename}: {e}")),
+    };
     let bytes = content.len();
 
     for line in content.lines() {
@@ -479,7 +496,7 @@ fn load_file(filename: &str, buf: &mut Buffer) -> Result<usize, String> {
     buf.set_filename(filename.to_string());
     buf.mark_saved();
 
-    Ok(bytes)
+    Ok(LoadOutcome::Loaded(bytes))
 }
 
 /// Edit: replace the buffer with the contents of a file.
@@ -499,7 +516,8 @@ fn run_edit(buf: &mut Buffer, args: &str) -> Action {
     // Replace the buffer entirely.
     *buf = Buffer::new();
     match load_file(&filename, buf) {
-        Ok(bytes) => Action::Print(format!("{bytes}")),
+        Ok(LoadOutcome::Loaded(bytes)) => Action::Print(format!("{bytes}")),
+        Ok(LoadOutcome::NewFile) => Action::Print(format!("{filename}: new file")),
         Err(e) => Action::Error(e),
     }
 }
@@ -766,4 +784,48 @@ fn run_write(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
         buf.mark_saved();
     }
     Action::Print(msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_path(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let mut p = std::env::temp_dir();
+        p.push(format!("ved_test_{tag}_{}_{nanos}", std::process::id()));
+        p
+    }
+
+    #[test]
+    fn missing_file_loads_as_new_file() {
+        let path = temp_path("newfile");
+        assert!(!path.exists());
+
+        let mut buf = Buffer::new();
+        let outcome = load_file(path.to_str().unwrap(), &mut buf);
+
+        assert!(matches!(outcome, Ok(LoadOutcome::NewFile)));
+        assert_eq!(buf.filename(), path.to_str());
+        assert!(buf.is_empty());
+        assert!(!buf.is_modified());
+        assert!(!path.exists(), "opening a new file must not create it");
+    }
+
+    #[test]
+    fn directory_is_still_an_error() {
+        let path = temp_path("dir");
+        std::fs::create_dir(&path).unwrap();
+
+        let mut buf = Buffer::new();
+        let outcome = load_file(path.to_str().unwrap(), &mut buf);
+
+        std::fs::remove_dir(&path).unwrap();
+
+        assert!(outcome.is_err());
+        assert!(buf.filename().is_none());
+    }
 }
