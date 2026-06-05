@@ -2,7 +2,7 @@
 
 A drop-in compatible clone of [ed](https://www.gnu.org/software/ed/), the original Unix line editor, written in pure-stdlib Rust. ved adds friendly error messages, command confirmations, long-form command aliases, and a built-in help reference while preserving strict compatibility so any script written for real ed runs against ved unchanged.
 
-**Full tutorial:** [https://excelano.github.io/ved/](https://excelano.github.io/ved/)
+**Full tutorial:** [https://excelano.com/ved/tutorial/](https://excelano.com/ved/tutorial/)
 
 ## Why
 
