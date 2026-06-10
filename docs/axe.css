@@ -1,11 +1,18 @@
 /* ============================================================
-   AXE v0.2
+   AXE v0.4.0
    Semantic-first. Classless defaults.
    Write plain HTML. It looks good.
 
    Author: David M. Anderson
    Built with AI assistance (Claude, Anthropic)
    ============================================================ */
+
+/* Framework version. Bump on each axe release and keep it in sync with
+   calendar.css / calendar.js. Audit a deployment with
+   `curl <site>/axe/axe.css | head`, or read --axe-version in devtools. */
+:root {
+    --axe-version: "0.4.0";
+}
 
 
 /* --- Reset ----------------------------------------------- */
@@ -31,6 +38,7 @@ body {
     line-height: var(--line-height, 1.7);
     color: var(--color-text);
     background: var(--color-bg);
+    transition: background 0.2s ease, color 0.2s ease;
 }
 
 img {
@@ -61,6 +69,10 @@ nav ul {
     overflow-x: auto;
 }
 
+nav ul li {
+    color: var(--color-nav-text);
+}
+
 nav ul li a {
     display: block;
     color: var(--color-nav-text);
@@ -74,6 +86,8 @@ nav ul li a {
 
 nav ul li a:hover {
     background: rgba(255, 255, 255, 0.1);
+    color: var(--color-nav-text);
+    text-decoration: none;
     opacity: 1;
 }
 
@@ -94,14 +108,17 @@ article {
     box-shadow: var(--shadow);
 }
 
-section {
+/* Section separators are document-flow furniture — scoped to articles
+   so page-level <main><section> layouts (full-width landing pages)
+   don't inherit doc-style dividers. */
+article section {
     margin-top: 2.5rem;
     padding-top: 2rem;
     border-top: 1px solid var(--color-border);
 }
 
-section:first-child,
-header + section {
+article section:first-child,
+article header + section {
     margin-top: 0;
     padding-top: 0;
     border-top: none;
@@ -138,11 +155,11 @@ header + section {
     text-decoration: none;
 }
 
-header {
-    margin-bottom: 2rem;
-}
-
+/* Header spacing is document-flow furniture — scoped to article so
+   site-chrome <header> (sticky nav bars) can sit flush against the
+   hero or first section below it. */
 article header {
+    margin-bottom: 2rem;
     padding-bottom: 1.5rem;
     border-bottom: 1px solid var(--color-border);
 }
@@ -529,8 +546,23 @@ footer {
     color: var(--color-accent);
 }
 
+/* In the nav, the toggle uses the nav palette, not the body palette. */
+nav .theme-toggle {
+    color: var(--color-nav-text);
+    border-color: var(--color-nav-text);
+}
+
+nav .theme-toggle:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--color-nav-text);
+    border-color: var(--color-nav-text);
+}
+
 .nav-right {
     margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
 }
 
 

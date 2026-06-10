@@ -1,0 +1,90 @@
+/*
+ * Axe Default Brand — the baseline every site falls back to.
+ * Don't edit this per-site; a site overrides it with its own sibling
+ * brand.css, layered after this file (later cascade wins).
+ * Primary: #1a6b7c  Secondary: #1e2a35
+ *
+ * Author: David M. Anderson
+ * Built with AI assistance (Claude, Anthropic)
+ */
+
+:root {
+    /* Colors — Light */
+    --color-bg:           #f2f5f6;
+    --color-surface:      #ffffff;
+    --color-text:         #111820;
+    --color-text-muted:   #566470;
+    --color-border:       #d8dfe3;
+    --color-accent:       #1a6b7c;
+    --color-accent-hover: #135768;
+    --color-highlight:       #d98c1f;
+    --color-highlight-hover: #b8751a;
+    --color-nav-bg:       #1e2a35;
+    --color-nav-text:     #edf0f2;
+
+    /* Typography */
+    --font-body:    system-ui, Arial, Helvetica, sans-serif;
+    --font-heading: var(--font-body);
+    --font-mono:    'Courier New', Courier, monospace;
+    --line-height:  1.7;
+
+    /* Shape */
+    --radius: 5px;
+
+    /* Shadow */
+    --shadow:    0 1px 3px rgba(0, 0, 0, 0.09);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.11);
+}
+
+/* Dark mode — system preference */
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        --color-bg:           #0b1017;
+        --color-surface:      #111820;
+        --color-text:         #e4e9ed;
+        --color-text-muted:   #8494a0;
+        --color-border:       #1e2a35;
+        --color-accent:       #38b8cc;
+        --color-accent-hover: #4cc8dc;
+        --color-highlight:       #f0a030;
+        --color-highlight-hover: #ffb44a;
+        --color-nav-bg:       #080d12;
+        --color-nav-text:     #dce3e8;
+        --shadow:             0 1px 3px rgba(0, 0, 0, 0.4);
+        --shadow-md:          0 4px 12px rgba(0, 0, 0, 0.5);
+    }
+}
+
+/* Dark mode — manual override */
+[data-theme="dark"] {
+    --color-bg:           #0b1017;
+    --color-surface:      #111820;
+    --color-text:         #e4e9ed;
+    --color-text-muted:   #8494a0;
+    --color-border:       #1e2a35;
+    --color-accent:       #38b8cc;
+    --color-accent-hover: #4cc8dc;
+    --color-highlight:       #f0a030;
+    --color-highlight-hover: #ffb44a;
+    --color-nav-bg:       #080d12;
+    --color-nav-text:     #dce3e8;
+    --shadow:             0 1px 3px rgba(0, 0, 0, 0.4);
+    --shadow-md:          0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+/* Light mode — explicit override */
+[data-theme="light"] {
+    --color-bg:           #f2f5f6;
+    --color-surface:      #ffffff;
+    --color-text:         #111820;
+    --color-text-muted:   #566470;
+    --color-border:       #d8dfe3;
+    --color-accent:       #1a6b7c;
+    --color-accent-hover: #135768;
+    --color-highlight:       #d98c1f;
+    --color-highlight-hover: #b8751a;
+    --color-nav-bg:       #1e2a35;
+    --color-nav-text:     #edf0f2;
+    --shadow:             0 1px 3px rgba(0, 0, 0, 0.09);
+    --shadow-md:          0 4px 12px rgba(0, 0, 0, 0.11);
+}
