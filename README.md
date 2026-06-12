@@ -94,6 +94,7 @@ Goodbye world
 | `[.,.]m DEST` | | Move the addressed lines to after DEST (0 = top) |
 | `[.,.]t DEST` | | Copy the addressed lines to after DEST (0 = top) |
 | `[.,.]s/re/new/[g]` | | Substitute: replace regex matches in addressed lines |
+| `[.,.]s` | | Repeat the last substitute (pattern, replacement, flags) |
 | `[.,.]g/re/cmd` | | Global: run a command on every line matching a regex |
 | `[.,.]v/re/cmd` | | Inverse global: run a command on lines NOT matching |
 | `[.,.]w [file]` | | Write the addressed lines (default: all) to a file |

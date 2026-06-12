@@ -415,6 +415,7 @@ ved commands (addresses shown in brackets are optional):
   [.,.]m DEST        Move the addressed lines to after DEST (0 = top)
   [.,.]t DEST        Copy the addressed lines to after DEST (0 = top)
   [.,.]s/re/new/[g]  Substitute: replace regex match in addressed lines
+  [.,.]s             Repeat the last substitute (pattern, replacement, flags)
   [.,.]g/re/cmd      Global: run cmd on lines matching regex
   [.,.]v/re/cmd      Inverse global: run cmd on lines NOT matching regex
   [.,.]w [file]      Write addressed lines (default: all) to file
@@ -701,31 +702,35 @@ fn run_read(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
 
 /// Substitute: apply a regex replacement to the addressed lines.
 /// The `args` string is everything after the `s` letter, e.g.
-/// `/old/new/g`. The first character is the delimiter.
+/// `/old/new/g`. The first character is the delimiter. A bare `s`
+/// with no arguments repeats the last substitute (pattern,
+/// replacement, and global flag), erroring if none has run yet.
 fn run_substitute(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
     let args = args.as_bytes();
 
-    if args.is_empty() {
-        return Action::Error("no delimiter".to_string());
-    }
+    let (pattern, replacement, global) = if args.is_empty() {
+        match buf.last_subst() {
+            Some((p, r, g)) => (p.clone(), r.clone(), *g),
+            None => return Action::Error("no previous substitute".to_string()),
+        }
+    } else {
+        let delim = args[0];
+        let rest = &args[1..];
 
-    let delim = args[0];
-    let args = &args[1..]; // skip delimiter
+        let (pattern, rest) = match scan_delimited(rest, delim) {
+            Some(r) => r,
+            None => return Action::Error("unterminated pattern".to_string()),
+        };
 
-    // Parse pattern: read until unescaped delimiter.
-    let (pattern, rest) = match scan_delimited(args, delim) {
-        Some(r) => r,
-        None => return Action::Error("unterminated pattern".to_string()),
+        let (replacement, rest) = match scan_delimited(rest, delim) {
+            Some(r) => r,
+            None => return Action::Error("unterminated replacement".to_string()),
+        };
+
+        let global = rest.contains(&b'g');
+        buf.set_last_subst(pattern.clone(), replacement.clone(), global);
+        (pattern, replacement, global)
     };
-
-    // Parse replacement: read until unescaped delimiter.
-    let (replacement, rest) = match scan_delimited(rest, delim) {
-        Some(r) => r,
-        None => return Action::Error("unterminated replacement".to_string()),
-    };
-
-    // Parse flags.
-    let global = rest.contains(&b'g');
 
     // Compile the pattern.
     let re = bre::Regex::compile(&pattern);
@@ -1194,5 +1199,62 @@ mod tests {
         buf.mark_saved();
         let _ = dispatch("1m3", &mut buf);
         assert!(buf.is_modified());
+    }
+
+    // ── bare s repeats last substitute ───────────────────────
+
+    #[test]
+    fn bare_s_with_no_prior_substitute_errors() {
+        let mut buf = buf_with(&["hello world"]);
+        let act = dispatch("s", &mut buf);
+        assert!(matches!(act, Action::Error(_)));
+    }
+
+    #[test]
+    fn bare_s_repeats_last_substitute() {
+        let mut buf = buf_with(&["foo", "foo", "foo"]);
+        let _ = dispatch("1s/foo/bar/", &mut buf);
+        assert_eq!(buf.line(1), Some("bar"));
+        // Bare s on a different line replays it.
+        let _ = dispatch("2s", &mut buf);
+        assert_eq!(buf.line(2), Some("bar"));
+        let _ = dispatch("3s", &mut buf);
+        assert_eq!(buf.line(3), Some("bar"));
+    }
+
+    #[test]
+    fn bare_s_preserves_global_flag() {
+        let mut buf = buf_with(&["xxx xxx xxx"]);
+        let _ = dispatch("s/x/Y/g", &mut buf);
+        assert_eq!(buf.line(1), Some("YYY YYY YYY"));
+        // Reset the line content, then bare s should also be global.
+        buf.replace_line(1, "xxx xxx xxx".to_string());
+        let _ = dispatch("s", &mut buf);
+        assert_eq!(buf.line(1), Some("YYY YYY YYY"));
+    }
+
+    #[test]
+    fn bare_s_without_global_flag_stays_non_global() {
+        let mut buf = buf_with(&["aaa aaa"]);
+        let _ = dispatch("s/a/Z/", &mut buf);
+        // First a only.
+        assert_eq!(buf.line(1), Some("Zaa aaa"));
+        let _ = dispatch("s", &mut buf);
+        // Bare s repeats: still non-global, so next first-a becomes Z.
+        assert_eq!(buf.line(1), Some("ZZa aaa"));
+    }
+
+    #[test]
+    fn explicit_s_updates_the_remembered_state() {
+        let mut buf = buf_with(&["one two three"]);
+        let _ = dispatch("s/one/ONE/", &mut buf);
+        assert_eq!(buf.line(1), Some("ONE two three"));
+        // A new explicit s replaces the remembered command.
+        let _ = dispatch("s/two/TWO/", &mut buf);
+        assert_eq!(buf.line(1), Some("ONE TWO three"));
+        // Reset and confirm bare s now reuses the SECOND substitute.
+        buf.replace_line(1, "one two three".to_string());
+        let _ = dispatch("s", &mut buf);
+        assert_eq!(buf.line(1), Some("one TWO three"));
     }
 }

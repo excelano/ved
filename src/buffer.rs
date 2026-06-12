@@ -22,6 +22,9 @@ pub struct Buffer {
     current: usize, // 0 means empty buffer / before-first-line
     modified: bool,
     filename: Option<String>,
+    // Last substitute's parsed pattern, replacement, and global
+    // flag. Bare `s` reuses these. None until the first s/.../.../.
+    last_subst: Option<(Vec<u8>, Vec<u8>, bool)>,
 }
 
 impl Buffer {
@@ -31,6 +34,7 @@ impl Buffer {
             current: 0,
             modified: false,
             filename: None,
+            last_subst: None,
         }
     }
 
@@ -97,6 +101,17 @@ impl Buffer {
     pub fn replace_line(&mut self, n: usize, content: String) {
         self.lines[n - 1] = content;
         self.modified = true;
+    }
+
+    /// Last-substitute state for bare `s` repetition. Returned as
+    /// `(pattern, replacement, global)`; None until the first
+    /// successful parse of an `s/.../.../` command.
+    pub fn last_subst(&self) -> Option<&(Vec<u8>, Vec<u8>, bool)> {
+        self.last_subst.as_ref()
+    }
+
+    pub fn set_last_subst(&mut self, pattern: Vec<u8>, replacement: Vec<u8>, global: bool) {
+        self.last_subst = Some((pattern, replacement, global));
     }
 
     /// Delete lines from `start` to `end` (1-indexed, inclusive).
