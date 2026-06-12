@@ -278,9 +278,10 @@ impl Regex {
         }
     }
 
-    /// Try zero, then one, then two, ... matches of `atom`,
-    /// checking whether the remaining elements match after each
-    /// count. Returns total bytes consumed and captures on success.
+    /// POSIX BRE leftmost-longest semantics: consume as many
+    /// `atom` matches as possible, then back off one at a time
+    /// until the remaining elements match. Returns total bytes
+    /// consumed and captures on success.
     fn match_star(
         &self,
         atom: &Atom,
@@ -290,24 +291,24 @@ impl Regex {
         caps: Caps,
         full_text: &[u8],
     ) -> Option<(usize, Caps)> {
-        let mut consumed = 0;
+        let mut max = 0;
+        while max < text.len() && atom_matches(atom, text[max]) {
+            max += 1;
+        }
         loop {
             if let Some((len, caps)) = self.match_here(
                 elements,
-                &text[consumed..],
-                pos + consumed,
+                &text[max..],
+                pos + max,
                 caps,
                 full_text,
             ) {
-                return Some((consumed + len, caps));
+                return Some((max + len, caps));
             }
-            if consumed >= text.len() {
+            if max == 0 {
                 return None;
             }
-            if !atom_matches(atom, text[consumed]) {
-                return None;
-            }
-            consumed += 1;
+            max -= 1;
         }
     }
 }
@@ -694,7 +695,7 @@ mod tests {
     fn position_dot_star() {
         let m = Regex::compile(b".*").find(b"hello").unwrap();
         assert_eq!(m.start, 0);
-        assert_eq!(m.end, 0);
+        assert_eq!(m.end, 5);
     }
 
     #[test]
@@ -708,6 +709,38 @@ mod tests {
     fn position_digits() {
         let m = Regex::compile(b"[0-9][0-9]*").find(b"abc123def").unwrap();
         assert_eq!(m.start, 3);
+        assert_eq!(m.end, 6);
+    }
+
+    // ── Greedy star (leftmost-longest) ───────────────────────
+
+    #[test]
+    fn star_is_greedy_unanchored() {
+        let m = Regex::compile(b"a*").find(b"aaa").unwrap();
+        assert_eq!(m.start, 0);
+        assert_eq!(m.end, 3);
+    }
+
+    #[test]
+    fn star_backs_off_for_trailing_atom() {
+        // .* must back off so the trailing 'c' can match
+        let m = Regex::compile(b".*c").find(b"abcabc").unwrap();
+        assert_eq!(m.start, 0);
+        assert_eq!(m.end, 6);
+    }
+
+    #[test]
+    fn star_greedy_with_class() {
+        let m = Regex::compile(b"[0-9]*").find(b"123abc").unwrap();
+        assert_eq!(m.start, 0);
+        assert_eq!(m.end, 3);
+    }
+
+    #[test]
+    fn star_followed_by_literal_backs_off() {
+        // a*ab needs star to give up one 'a' so the literal 'a' can match
+        let m = Regex::compile(b"a*ab").find(b"aaab").unwrap();
+        assert_eq!(m.start, 0);
         assert_eq!(m.end, 4);
     }
 
