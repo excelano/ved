@@ -89,6 +89,7 @@ Goodbye world
 | `[.,.]d` | `delete` | Delete the addressed lines |
 | `[.,.]p` | `print` | Print the addressed lines |
 | `[.,.]n` | `number` | Print with line numbers |
+| `[.,.]l` | `list` | Print with non-printing bytes as `\NNN` octal, ending `$` |
 | `[.,.]s/re/new/[g]` | | Substitute: replace regex matches in addressed lines |
 | `[.,.]g/re/cmd` | | Global: run a command on every line matching a regex |
 | `[.,.]v/re/cmd` | | Inverse global: run a command on lines NOT matching |
@@ -132,16 +133,23 @@ In replacement strings: `&` expands to the whole match, `\1`-`\9` expand to capt
 
 ## Implementation
 
-2,006 lines of Rust across four modules, zero dependencies, 76 tests.
+2,190 lines of Rust across four modules, zero dependencies, 89 tests.
 
 | Module | Lines | Purpose |
 |---|---|---|
-| `main.rs` | 753 | REPL, command dispatch, substitute/global/write/read |
-| `bre.rs` | 929 | BRE regex engine: compiler, matcher, replacement expander |
+| `main.rs` | 904 | REPL, command dispatch, substitute/global/write/read |
+| `bre.rs` | 962 | BRE regex engine: compiler, matcher, replacement expander |
 | `address.rs` | 208 | Address parser and resolver |
 | `buffer.rs` | 116 | Line buffer with current-line tracking |
 
 The BRE engine started as a translation of Rob Pike's ~30-line recursive matcher from "The Practice of Programming," then grew bottom-up through a compile step (inspired by Ken Thompson's original ed), bracket expressions, capturing groups, and backreferences. The full history is in the git log.
+
+### Limitations worth knowing
+
+Two limitations are inherited from ed and intentional, since changing them would make ved not-an-ed-clone:
+
+- **Newline-only record model.** Lines are delimited by `\n` (or `\r\n`). The ASCII information separators (RS, GS, FS, US) used in some text formats as record separators do *not* create addressable lines — a file using RS to separate records but no newlines loads as a single ved line. Use `l` to make embedded separators visible within a line.
+- **UTF-8 only.** Files are read via `std::fs::read_to_string`, which rejects invalid UTF-8. ved is a text editor, not a binary editor. UTF-8 text with multi-byte characters works; arbitrary binary does not.
 
 ## License
 

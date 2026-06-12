@@ -228,7 +228,7 @@ fn dispatch(cmd: &str, buf: &mut Buffer) -> Action {
     // "go to that line and print it" — so `5<Enter>` jumps to
     // line 5 and prints it.
     if rest.is_empty() {
-        return run_print(&spec, buf, false);
+        return run_print(&spec, buf, PrintMode::Plain);
     }
 
     // Stage one: commands that take no arguments after the letter.
@@ -278,8 +278,9 @@ fn dispatch(cmd: &str, buf: &mut Buffer) -> Action {
             return Action::EnterInputMode;
         }
         "d" | "delete" => return run_delete(&spec, buf),
-        "p" | "print" => return run_print(&spec, buf, false),
-        "n" | "number" => return run_print(&spec, buf, true),
+        "p" | "print" => return run_print(&spec, buf, PrintMode::Plain),
+        "n" | "number" => return run_print(&spec, buf, PrintMode::Numbered),
+        "l" | "list" => return run_print(&spec, buf, PrintMode::List),
         "H" | "help" => return run_help(),
         "Q" => return Action::ForceQuit,
         _ => {}
@@ -406,6 +407,7 @@ ved commands (addresses shown in brackets are optional):
   [.,.]d, delete     Delete the addressed lines
   [.,.]p, print      Print the addressed lines
   [.,.]n, number     Print with line numbers
+  [.,.]l, list       Print with non-printing chars as \\NNN octal, ending $
   [.,.]s/re/new/[g]  Substitute: replace regex match in addressed lines
   [.,.]g/re/cmd      Global: run cmd on lines matching regex
   [.,.]v/re/cmd      Inverse global: run cmd on lines NOT matching regex
@@ -445,7 +447,13 @@ fn run_delete(spec: &Spec, buf: &mut Buffer) -> Action {
 /// lines. With `numbered = true` each line is prefixed with its
 /// 1-indexed position and a tab, matching ed's `n` command. Updates
 /// the current line to the end of the printed range.
-fn run_print(spec: &Spec, buf: &mut Buffer, numbered: bool) -> Action {
+enum PrintMode {
+    Plain,
+    Numbered,
+    List,
+}
+
+fn run_print(spec: &Spec, buf: &mut Buffer, mode: PrintMode) -> Action {
     let range = match spec.resolve(buf) {
         Ok(r) => r,
         Err(e) => return Action::Error(e),
@@ -456,16 +464,39 @@ fn run_print(spec: &Spec, buf: &mut Buffer, numbered: bool) -> Action {
         if n > range.start {
             output.push('\n');
         }
-        if numbered {
+        if matches!(mode, PrintMode::Numbered) {
             output.push_str(&format!("{n}\t"));
         }
         if let Some(line) = buf.line(n) {
-            output.push_str(line);
+            if matches!(mode, PrintMode::List) {
+                output.push_str(&render_list_line(line));
+            } else {
+                output.push_str(line);
+            }
         }
     }
 
     buf.set_current(range.end);
     Action::Print(output)
+}
+
+/// Render a line for the `l` (list) command: each byte outside
+/// printable ASCII becomes `\NNN` (3-digit octal), backslashes
+/// escape to `\\`, and a `$` marks end-of-line. Operates byte
+/// by byte so multi-byte UTF-8 sequences also become visible —
+/// the point of `l` is to disambiguate, including for cases
+/// like a non-breaking space hiding among regular spaces.
+fn render_list_line(line: &str) -> String {
+    let mut out = String::new();
+    for b in line.bytes() {
+        match b {
+            b'\\' => out.push_str("\\\\"),
+            0x20..=0x7E => out.push(b as char),
+            _ => out.push_str(&format!("\\{b:03o}")),
+        }
+    }
+    out.push('$');
+    out
 }
 
 /// Load a file into the buffer, appending lines after position
@@ -827,5 +858,47 @@ mod tests {
 
         assert!(outcome.is_err());
         assert!(buf.filename().is_none());
+    }
+
+    // ── render_list_line (l command) ─────────────────────────
+
+    #[test]
+    fn list_printable_ascii_passes_through() {
+        assert_eq!(render_list_line("hello world"), "hello world$");
+    }
+
+    #[test]
+    fn list_empty_line_is_just_dollar() {
+        assert_eq!(render_list_line(""), "$");
+    }
+
+    #[test]
+    fn list_tab_becomes_octal() {
+        assert_eq!(render_list_line("a\tb"), "a\\011b$");
+    }
+
+    #[test]
+    fn list_ascii_separators_become_octal() {
+        // FS GS RS US — the ASCII information separators
+        let s = "A\u{1C}B\u{1D}C\u{1E}D\u{1F}E";
+        assert_eq!(render_list_line(s), "A\\034B\\035C\\036D\\037E$");
+    }
+
+    #[test]
+    fn list_backslash_escapes_to_double_backslash() {
+        assert_eq!(render_list_line("a\\b"), "a\\\\b$");
+    }
+
+    #[test]
+    fn list_utf8_multibyte_renders_byte_by_byte() {
+        // ü is 0xC3 0xBC in UTF-8; l surfaces every non-ASCII byte
+        assert_eq!(render_list_line("ü"), "\\303\\274$");
+    }
+
+    #[test]
+    fn list_high_bit_byte_pads_to_three_digits() {
+        // 0x7F (DEL) is non-printable; 0xFF is high-bit
+        let s = "\u{7F}";
+        assert_eq!(render_list_line(s), "\\177$");
     }
 }
