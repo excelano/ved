@@ -37,6 +37,7 @@ Each slice is a complete working program with one more capability than the previ
 | 9 | Friendly errors + confirmations + `Q` (force quit) | **done** |
 | 10 | `H`/`help` command reference | **done** |
 | 11 | Open existing files, `e` (edit), `r` (read) | **done** |
+| 12 | `l` (list) — visible rendering of non-printing characters | **planned** |
 
 ## Build and run
 
@@ -103,6 +104,28 @@ Skipped for now: POSIX character classes (`[[:alpha:]]`), `\{n,m\}` bounded repe
 
 **Open question for after slice 5a works.** Is `bre` worth publishing as a standalone crate on crates.io? The name `bre` is taken (a Luau runtime, unrelated). Possible names: `posix-bre`, `ed-regex`, `bre-rs`, `pure-bre`. Decision deferred until the engine is real. If we extract it, the goal would be a small, well-documented crate aimed at people writing ed-style or sed-style tools who want pure-Rust BRE without pulling in the Redox no_std stack.
 
+## Slice 12 — `l` (list) command (planned)
+
+**Why this jumps the backlog.** ved's thesis is "verbose ed" — clarity where ed is terse. Real ed's `l` command exists for exactly that: it renders a line with all non-printing characters made *visible* and unambiguous. ved currently has no way to show them, which is a gap sitting right on top of the project's reason for existing. Of every missing ed command, `l` is the most on-brand.
+
+**The problem, demonstrated.** ved stores control characters fine (buffer is `Vec<String>`, and the ASCII information separators US/RS/GS/FS = U+001C–U+001F are valid single-byte UTF-8), but it cannot *display* them. Both print paths (`p` and `n`) just `push_str` the raw line (`src/main.rs:463`), so the bytes go to the terminal uninterpreted and invisible. Observed live: a line `Alice<US>Engineering<US>128,000` prints as `AliceEngineering128,000` with no hint the delimiters exist — you only see them by piping ved through `cat -v` externally. So you'd be editing separator-delimited data blind.
+
+**What `l` should do (ed semantics).** For the addressed range, print each line with:
+- Non-printing characters shown as backslash + 3-digit octal (ed's convention): tab → `\011`, US → `\037`, RS → `\036`, GS → `\035`, FS → `\034`, etc. (GNU ed also special-cases a few as `\t`-style; plain ed uses octal — match plain ed for strict drop-in.)
+- A literal `$` appended at end of line to mark the boundary unambiguously.
+- Backslashes in the data escaped as `\\`.
+- Long lines optionally folded (ed wraps at a column with a trailing `\`); **skip folding for v1**, note it as a later refinement.
+
+**Where it goes.** Add an `l`/`list` arm to the stage-one command match (`src/main.rs:280-284`, alongside `p` and `n`). Implement as a third mode of the existing `run_print` path (`src/main.rs:447`) — it already resolves the range and walks lines; add an `escaped: bool` (or an enum: Plain / Numbered / List) and a small byte→escape renderer. Update current-line to range end like the other two. ~30 lines plus a render helper. Add `l`/`list` to the `H`/help reference (`run_help`, near `src/main.rs:417`) and to the long-form alias list in the design table above.
+
+**Note on regex/substitute interaction.** ved's BRE has no `\xNN` / `\nnn` escape (documented set: `.`, `*`, `^`, `$`, classes — `src/main.rs:417`). So a user can't `s/|/\037/` to *insert* a separator from the keyboard; they'd have to type the literal byte via terminal verbatim-insert (`Ctrl-V Ctrl-_`). Adding numeric escapes to the BRE engine and to the `s` replacement parser is a *separate* candidate slice — worth considering after `l`, since "see them" is more urgent than "type them," and external `printf`/`sed` already covers insertion.
+
+**Two limitations to document in README, NOT fix.** These are ed being ed; changing them would make ved not-an-ed-clone:
+1. Record model is newline-only. ved splits input with `content.lines()` (`src/main.rs:493, 558`), i.e. on `\n`/`\r\n` only. RS (0x1E) used as a *record* separator does NOT create addressable lines — an RS-delimited file with no newlines loads as a single line, defeating line-addressing. (Verified live: 3 RS-separated records → 1 ved line.)
+2. UTF-8 only. Reads go through `std::fs::read_to_string` (`src/main.rs:482, 551`), which rejects invalid UTF-8. ved is a text editor, not a binary editor. Separator chars are valid UTF-8 so they're unaffected; arbitrary binary is.
+
+**Context.** This came out of a Linux-commands teaching session (cut/sed/awk → delimiter collision → ASCII information separators). The question "how does ved handle these?" surfaced the gap. Findings above are from reading the source and running the release binary, not from memory.
+
 ## Open questions
 
-None at the moment. Slices 2 through 4 are execution work. New questions will accumulate here as they arise.
+None at the moment. New questions will accumulate here as they arise.
