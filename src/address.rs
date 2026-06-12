@@ -105,6 +105,13 @@ impl Spec {
         self.resolve_with(buf, (Address::Number(1), Address::Last))
     }
 
+    /// Resolve with `.,.+1` as the default for an omitted spec.
+    /// Used by `j` (join) — bare `j` joins the current line with
+    /// the next one, matching ed.
+    pub fn resolve_or_pair_with_next(&self, buf: &Buffer) -> Result<Range, String> {
+        self.resolve_with(buf, (Address::Current, Address::Offset(1)))
+    }
+
     fn resolve_with(
         &self,
         buf: &Buffer,

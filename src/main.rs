@@ -281,6 +281,7 @@ fn dispatch(cmd: &str, buf: &mut Buffer) -> Action {
         "p" | "print" => return run_print(&spec, buf, PrintMode::Plain),
         "n" | "number" => return run_print(&spec, buf, PrintMode::Numbered),
         "l" | "list" => return run_print(&spec, buf, PrintMode::List),
+        "j" | "join" => return run_join(&spec, buf),
         "H" | "help" => return run_help(),
         "Q" => return Action::ForceQuit,
         _ => {}
@@ -408,6 +409,7 @@ ved commands (addresses shown in brackets are optional):
   [.,.]p, print      Print the addressed lines
   [.,.]n, number     Print with line numbers
   [.,.]l, list       Print with non-printing chars as \\NNN octal, ending $
+  [.,.+1]j, join     Join the addressed lines into one (default: . and next)
   [.,.]s/re/new/[g]  Substitute: replace regex match in addressed lines
   [.,.]g/re/cmd      Global: run cmd on lines matching regex
   [.,.]v/re/cmd      Inverse global: run cmd on lines NOT matching regex
@@ -441,6 +443,36 @@ fn run_delete(spec: &Spec, buf: &mut Buffer) -> Action {
             range.start, range.end
         ))
     }
+}
+
+/// Join the addressed lines into a single line at the start of the
+/// range. Default address is `.,.+1` — bare `j` joins the current
+/// line with the next, matching ed. A single-line range is a silent
+/// no-op (still sets current). The joined line is the literal
+/// concatenation: ed does not insert separators.
+fn run_join(spec: &Spec, buf: &mut Buffer) -> Action {
+    let range = match spec.resolve_or_pair_with_next(buf) {
+        Ok(r) => r,
+        Err(e) => return Action::Error(e),
+    };
+    if range.start == range.end {
+        buf.set_current(range.start);
+        return Action::Print(String::new());
+    }
+    let mut joined = String::new();
+    for n in range.start..=range.end {
+        if let Some(line) = buf.line(n) {
+            joined.push_str(line);
+        }
+    }
+    buf.replace_line(range.start, joined);
+    buf.delete_range(range.start + 1, range.end);
+    buf.set_current(range.start);
+    let count = range.end - range.start + 1;
+    Action::Print(format!(
+        "joined {count} lines ({}-{}) into line {}",
+        range.start, range.end, range.start
+    ))
 }
 
 /// Resolve `spec` against the buffer and emit the corresponding
@@ -900,5 +932,86 @@ mod tests {
         // 0x7F (DEL) is non-printable; 0xFF is high-bit
         let s = "\u{7F}";
         assert_eq!(render_list_line(s), "\\177$");
+    }
+
+    // ── j (join) command ─────────────────────────────────────
+
+    fn buf_with(lines: &[&str]) -> Buffer {
+        let mut b = Buffer::new();
+        for (i, l) in lines.iter().enumerate() {
+            b.append_after(i, (*l).to_string());
+        }
+        b
+    }
+
+    #[test]
+    fn join_default_joins_current_and_next() {
+        let mut buf = buf_with(&["foo", "bar", "baz"]);
+        buf.set_current(1);
+        let act = dispatch("j", &mut buf);
+        assert!(matches!(act, Action::Print(_)));
+        assert_eq!(buf.len(), 2);
+        assert_eq!(buf.line(1), Some("foobar"));
+        assert_eq!(buf.line(2), Some("baz"));
+        assert_eq!(buf.current(), 1);
+    }
+
+    #[test]
+    fn join_range_concatenates_all_lines() {
+        let mut buf = buf_with(&["a", "b", "c", "d", "e"]);
+        let act = dispatch("2,4j", &mut buf);
+        assert!(matches!(act, Action::Print(_)));
+        assert_eq!(buf.len(), 3);
+        assert_eq!(buf.line(2), Some("bcd"));
+        assert_eq!(buf.line(3), Some("e"));
+        assert_eq!(buf.current(), 2);
+    }
+
+    #[test]
+    fn join_single_line_is_silent_noop() {
+        let mut buf = buf_with(&["one", "two", "three"]);
+        let act = dispatch("2j", &mut buf);
+        if let Action::Print(s) = act {
+            assert!(s.is_empty());
+        } else {
+            panic!("expected silent Print on single-line join");
+        }
+        assert_eq!(buf.len(), 3);
+        assert_eq!(buf.line(2), Some("two"));
+        assert_eq!(buf.current(), 2);
+    }
+
+    #[test]
+    fn join_does_not_insert_separators() {
+        // ed semantics: literal concatenation, no spaces added.
+        let mut buf = buf_with(&["hello", "world"]);
+        let _ = dispatch("1,2j", &mut buf);
+        assert_eq!(buf.line(1), Some("helloworld"));
+    }
+
+    #[test]
+    fn join_at_last_line_errors() {
+        // Bare `j` on the last line wants `.+1`, which is off-end.
+        let mut buf = buf_with(&["only", "lines", "here"]);
+        buf.set_current(3);
+        let act = dispatch("j", &mut buf);
+        assert!(matches!(act, Action::Error(_)));
+    }
+
+    #[test]
+    fn join_long_form_alias_works() {
+        let mut buf = buf_with(&["a", "b", "c"]);
+        let _ = dispatch("1,3join", &mut buf);
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf.line(1), Some("abc"));
+    }
+
+    #[test]
+    fn join_marks_buffer_modified() {
+        let mut buf = buf_with(&["x", "y"]);
+        buf.mark_saved();
+        assert!(!buf.is_modified());
+        let _ = dispatch("1,2j", &mut buf);
+        assert!(buf.is_modified());
     }
 }
