@@ -131,8 +131,9 @@ ved implements POSIX Basic Regular Expressions (BRE) with a hand-written engine.
 | `[a-z]` | Range: matches any lowercase letter |
 | `\(...\)` | Capturing group |
 | `\1` ... `\9` | Backreference to captured group |
+| `\0NN` | Octal byte literal (3-digit, leading zero, range `\000`-`\077`) |
 
-In replacement strings: `&` expands to the whole match, `\1`-`\9` expand to captured groups, `\&` is a literal ampersand.
+In replacement strings: `&` expands to the whole match, `\1`-`\9` expand to captured groups, `\&` is a literal ampersand, `\0NN` inserts the corresponding byte. The leading-zero requirement keeps `\1`-`\9` reserved for backreferences; `\037` is the ASCII unit separator, `\011` is tab, `\033` is escape.
 
 ## Implementation
 

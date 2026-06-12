@@ -119,8 +119,29 @@ impl Regex {
             }
 
             // Backslash sequences: \( \) for groups, \1-\9 for
-            // backreferences, \X for literal X.
+            // backreferences, \0NN for octal byte literal, \X for
+            // literal X.
             if pattern[i] == b'\\' && i + 1 < pattern.len() {
+                // \0NN — 3-digit octal byte literal. Leading 0 only
+                // (so \1..\9 stay reserved for backreferences). Two
+                // octal digits after the leading zero cover 0-077.
+                if pattern[i + 1] == b'0'
+                    && i + 4 <= pattern.len()
+                    && (b'0'..=b'7').contains(&pattern[i + 2])
+                    && (b'0'..=b'7').contains(&pattern[i + 3])
+                {
+                    let byte = (pattern[i + 2] - b'0') * 8
+                        + (pattern[i + 3] - b'0');
+                    let atom = Atom::Literal(byte);
+                    i += 4;
+                    if i < pattern.len() && pattern[i] == b'*' {
+                        elements.push(Element::Star(atom));
+                        i += 1;
+                    } else {
+                        elements.push(Element::One(atom));
+                    }
+                    continue;
+                }
                 match pattern[i + 1] {
                     b'(' => {
                         group_num += 1;
@@ -410,6 +431,20 @@ pub fn expand_replacement(replacement: &[u8], m: &Match, text: &[u8]) -> Vec<u8>
                 i += 1;
             }
             b'\\' if i + 1 < replacement.len() => {
+                // \0NN — 3-digit octal byte literal. Same shape as
+                // the pattern compiler: leading 0 only, two more
+                // octal digits, range 0-077.
+                if replacement[i + 1] == b'0'
+                    && i + 4 <= replacement.len()
+                    && (b'0'..=b'7').contains(&replacement[i + 2])
+                    && (b'0'..=b'7').contains(&replacement[i + 3])
+                {
+                    let byte = (replacement[i + 2] - b'0') * 8
+                        + (replacement[i + 3] - b'0');
+                    result.push(byte);
+                    i += 4;
+                    continue;
+                }
                 match replacement[i + 1] {
                     b'&' => {
                         result.push(b'&');
@@ -958,5 +993,65 @@ mod tests {
         let m = Regex::compile(b"x\\(abc\\)y").find(text).unwrap();
         // & is the whole match "xabcy", \1 is just "abc"
         assert_eq!(expand_replacement(b"&-\\1", &m, text), b"xabcy-abc");
+    }
+
+    // ── \NNN octal byte escapes ──────────────────────────────
+
+    #[test]
+    fn octal_escape_matches_us_separator() {
+        // \037 = 0x1F (US, ASCII unit separator)
+        assert!(has_match(b"\\037", b"a\x1fb"));
+        assert!(!has_match(b"\\037", b"abc"));
+    }
+
+    #[test]
+    fn octal_escape_matches_tab() {
+        // \011 = 0x09 (TAB)
+        assert!(has_match(b"a\\011b", b"a\tb"));
+    }
+
+    #[test]
+    fn octal_escape_with_star() {
+        // \040 = space; one or more spaces
+        assert!(has_match(b"a\\040*b", b"a   b"));
+        assert!(has_match(b"a\\040*b", b"ab"));
+    }
+
+    #[test]
+    fn octal_escape_zero_byte() {
+        // \000 = NUL
+        assert!(has_match(b"\\000", b"x\0y"));
+    }
+
+    #[test]
+    fn octal_escape_malformed_still_literal_zero() {
+        // \0 with non-octal trailing falls back to literal '0'.
+        assert!(has_match(b"\\0x", b"0x"));
+    }
+
+    #[test]
+    fn backref_still_works_after_octal_added() {
+        // Regression: \1 must remain a backreference, not be
+        // re-interpreted as start of an octal.
+        assert!(has_match(b"^\\(ab\\)\\1$", b"abab"));
+    }
+
+    #[test]
+    fn replace_octal_escape_inserts_byte() {
+        let text = b"foo bar";
+        let m = Regex::compile(b" ").find(text).unwrap();
+        // \037 = 0x1F (US)
+        assert_eq!(expand_replacement(b"\\037", &m, text), b"\x1f");
+    }
+
+    #[test]
+    fn replace_octal_among_other_specials() {
+        let text = b"foo bar";
+        let m = Regex::compile(b"foo \\(bar\\)").find(text).unwrap();
+        // & captures "foo bar"; \037 inserts US; \1 inserts "bar"
+        assert_eq!(
+            expand_replacement(b"&\\037\\1", &m, text),
+            b"foo bar\x1fbar"
+        );
     }
 }
