@@ -35,7 +35,7 @@ curl -fsSL https://excelano.com/apt/setup.sh | sudo sh
 sudo apt install ved
 ```
 
-The apt package is currently amd64 only; arm64 ships with the next release. On arm64, use the prebuilt installer above.
+Both amd64 and arm64 packages ship with every release.
 
 ## Build from source
 
@@ -138,14 +138,14 @@ In replacement strings: `&` expands to the whole match, `\1`-`\9` expand to capt
 
 ## Implementation
 
-2,190 lines of Rust across four modules, zero dependencies, 89 tests.
+2,684 lines of Rust across four modules, zero dependencies, 119 tests.
 
 | Module | Lines | Purpose |
 |---|---|---|
-| `main.rs` | 904 | REPL, command dispatch, substitute/global/write/read |
-| `bre.rs` | 962 | BRE regex engine: compiler, matcher, replacement expander |
-| `address.rs` | 208 | Address parser and resolver |
-| `buffer.rs` | 116 | Line buffer with current-line tracking |
+| `main.rs` | 1260 | REPL, command dispatch, substitute/global/write/read |
+| `bre.rs` | 1057 | BRE regex engine: compiler, matcher, replacement expander |
+| `address.rs` | 236 | Address parser and resolver |
+| `buffer.rs` | 131 | Line buffer with current-line tracking |
 
 The BRE engine started as a translation of Rob Pike's ~30-line recursive matcher from "The Practice of Programming," then grew bottom-up through a compile step (inspired by Ken Thompson's original ed), bracket expressions, capturing groups, and backreferences. The full history is in the git log.
 

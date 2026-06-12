@@ -1,6 +1,6 @@
 [package]
 name = "ved"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 description = "The verbose ed — a drop-in compatible ed clone with friendly errors and a built-in help system"
 license = "MIT"
