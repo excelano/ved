@@ -141,6 +141,27 @@ impl Spec {
     }
 }
 
+/// Parse and resolve a single address used as the destination of a
+/// move (`m`) or transfer (`t`) command. Allows 0 ("before line 1")
+/// because `m`/`t` write *after* the destination — dest 0 means
+/// "place at the top of the buffer". Returns the resolved line
+/// number and the remaining input after the address.
+pub fn parse_dest<'a>(input: &'a str, buf: &Buffer) -> Result<(usize, &'a str), String> {
+    let input = input.trim_start();
+    let (spec, rest) = Spec::parse(input)?;
+    if spec.end.is_some() {
+        return Err("destination must be a single address".to_string());
+    }
+    let addr = spec
+        .start
+        .ok_or_else(|| "no destination".to_string())?;
+    let n = resolve_one(&addr, buf)?;
+    if n > buf.len() {
+        return Err("invalid address".to_string());
+    }
+    Ok((n, rest))
+}
+
 /// Parse a single address atom. Returns `(maybe_address, rest)`.
 /// `Ok((None, rest))` means "no address here, the rest is the
 /// command letter" — used by callers that need to distinguish an

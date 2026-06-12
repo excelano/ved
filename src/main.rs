@@ -298,6 +298,8 @@ fn dispatch(cmd: &str, buf: &mut Buffer) -> Action {
         b'v' => run_global(&spec, buf, args, true),
         b's' => run_substitute(&spec, buf, args),
         b'w' => run_write(&spec, buf, args),
+        b'm' => run_move(&spec, buf, args),
+        b't' => run_transfer(&spec, buf, args),
         _ => Action::Error(format!("unknown command: {rest}")),
     }
 }
@@ -410,6 +412,8 @@ ved commands (addresses shown in brackets are optional):
   [.,.]n, number     Print with line numbers
   [.,.]l, list       Print with non-printing chars as \\NNN octal, ending $
   [.,.+1]j, join     Join the addressed lines into one (default: . and next)
+  [.,.]m DEST        Move the addressed lines to after DEST (0 = top)
+  [.,.]t DEST        Copy the addressed lines to after DEST (0 = top)
   [.,.]s/re/new/[g]  Substitute: replace regex match in addressed lines
   [.,.]g/re/cmd      Global: run cmd on lines matching regex
   [.,.]v/re/cmd      Inverse global: run cmd on lines NOT matching regex
@@ -472,6 +476,71 @@ fn run_join(spec: &Spec, buf: &mut Buffer) -> Action {
     Action::Print(format!(
         "joined {count} lines ({}-{}) into line {}",
         range.start, range.end, range.start
+    ))
+}
+
+/// Move the addressed range to after a destination address.
+/// `2,4m6` moves lines 2-4 to after line 6. The destination may be
+/// 0 ("before line 1") so a range can be moved to the top. ed
+/// forbids moving a range into itself, so dest in `[start, end]`
+/// is an error.
+fn run_move(spec: &Spec, buf: &mut Buffer, dest_arg: &str) -> Action {
+    let range = match spec.resolve(buf) {
+        Ok(r) => r,
+        Err(e) => return Action::Error(e),
+    };
+    let dest = match address::parse_dest(dest_arg, buf) {
+        Ok((d, _)) => d,
+        Err(e) => return Action::Error(e),
+    };
+    if dest >= range.start && dest <= range.end {
+        return Action::Error("invalid destination".to_string());
+    }
+    let lines: Vec<String> = (range.start..=range.end)
+        .filter_map(|n| buf.line(n).map(str::to_string))
+        .collect();
+    let count = lines.len();
+    buf.delete_range(range.start, range.end);
+    // Deletion shifts everything past `range.end` down by `count`.
+    let adjusted = if dest > range.end { dest - count } else { dest };
+    let mut at = adjusted;
+    for line in lines {
+        buf.append_after(at, line);
+        at += 1;
+    }
+    buf.set_current(adjusted + count);
+    Action::Print(format!(
+        "moved {count} lines ({}-{}) to after {dest}",
+        range.start, range.end
+    ))
+}
+
+/// Copy the addressed range to after a destination address. Like
+/// `m` but the source lines stay in place. The destination may be
+/// 0 ("before line 1"). Unlike `m`, the destination may be inside
+/// the source range — you get the original plus a copy.
+fn run_transfer(spec: &Spec, buf: &mut Buffer, dest_arg: &str) -> Action {
+    let range = match spec.resolve(buf) {
+        Ok(r) => r,
+        Err(e) => return Action::Error(e),
+    };
+    let dest = match address::parse_dest(dest_arg, buf) {
+        Ok((d, _)) => d,
+        Err(e) => return Action::Error(e),
+    };
+    let lines: Vec<String> = (range.start..=range.end)
+        .filter_map(|n| buf.line(n).map(str::to_string))
+        .collect();
+    let count = lines.len();
+    let mut at = dest;
+    for line in lines {
+        buf.append_after(at, line);
+        at += 1;
+    }
+    buf.set_current(dest + count);
+    Action::Print(format!(
+        "copied {count} lines ({}-{}) to after {dest}",
+        range.start, range.end
     ))
 }
 
@@ -1012,6 +1081,118 @@ mod tests {
         buf.mark_saved();
         assert!(!buf.is_modified());
         let _ = dispatch("1,2j", &mut buf);
+        assert!(buf.is_modified());
+    }
+
+    // ── m (move) command ─────────────────────────────────────
+
+    #[test]
+    fn move_range_to_after_later_line() {
+        let mut buf = buf_with(&["a", "b", "c", "d", "e"]);
+        let _ = dispatch("2,3m5", &mut buf);
+        // Removed b, c from positions 2-3; appended after the
+        // shifted-down dest. Result: a, d, e, b, c.
+        assert_eq!(buf.line(1), Some("a"));
+        assert_eq!(buf.line(2), Some("d"));
+        assert_eq!(buf.line(3), Some("e"));
+        assert_eq!(buf.line(4), Some("b"));
+        assert_eq!(buf.line(5), Some("c"));
+        assert_eq!(buf.current(), 5);
+    }
+
+    #[test]
+    fn move_range_to_after_earlier_line() {
+        let mut buf = buf_with(&["a", "b", "c", "d", "e"]);
+        let _ = dispatch("4,5m1", &mut buf);
+        // Move d,e to after line 1. Result: a, d, e, b, c.
+        assert_eq!(buf.line(1), Some("a"));
+        assert_eq!(buf.line(2), Some("d"));
+        assert_eq!(buf.line(3), Some("e"));
+        assert_eq!(buf.line(4), Some("b"));
+        assert_eq!(buf.line(5), Some("c"));
+    }
+
+    #[test]
+    fn move_to_top_with_dest_zero() {
+        let mut buf = buf_with(&["a", "b", "c"]);
+        let _ = dispatch("3m0", &mut buf);
+        assert_eq!(buf.line(1), Some("c"));
+        assert_eq!(buf.line(2), Some("a"));
+        assert_eq!(buf.line(3), Some("b"));
+        assert_eq!(buf.current(), 1);
+    }
+
+    #[test]
+    fn move_to_end_with_dollar() {
+        let mut buf = buf_with(&["a", "b", "c", "d"]);
+        let _ = dispatch("1m$", &mut buf);
+        // Move line 1 to after line 4 (the $). Result: b, c, d, a.
+        assert_eq!(buf.line(1), Some("b"));
+        assert_eq!(buf.line(2), Some("c"));
+        assert_eq!(buf.line(3), Some("d"));
+        assert_eq!(buf.line(4), Some("a"));
+    }
+
+    #[test]
+    fn move_into_self_errors() {
+        let mut buf = buf_with(&["a", "b", "c", "d", "e"]);
+        let act = dispatch("2,4m3", &mut buf);
+        assert!(matches!(act, Action::Error(_)));
+        // Buffer unchanged
+        assert_eq!(buf.line(2), Some("b"));
+        assert_eq!(buf.line(3), Some("c"));
+        assert_eq!(buf.line(4), Some("d"));
+    }
+
+    #[test]
+    fn move_invalid_dest_errors() {
+        let mut buf = buf_with(&["a", "b"]);
+        let act = dispatch("1m99", &mut buf);
+        assert!(matches!(act, Action::Error(_)));
+    }
+
+    // ── t (transfer/copy) command ────────────────────────────
+
+    #[test]
+    fn transfer_copies_range_after_dest() {
+        let mut buf = buf_with(&["a", "b", "c"]);
+        let _ = dispatch("1,2t3", &mut buf);
+        // Original lines stay, copy of 1-2 appended after 3.
+        assert_eq!(buf.len(), 5);
+        assert_eq!(buf.line(4), Some("a"));
+        assert_eq!(buf.line(5), Some("b"));
+        assert_eq!(buf.current(), 5);
+    }
+
+    #[test]
+    fn transfer_to_top_with_dest_zero() {
+        let mut buf = buf_with(&["x", "y"]);
+        let _ = dispatch("2t0", &mut buf);
+        assert_eq!(buf.line(1), Some("y"));
+        assert_eq!(buf.line(2), Some("x"));
+        assert_eq!(buf.line(3), Some("y"));
+        assert_eq!(buf.current(), 1);
+    }
+
+    #[test]
+    fn transfer_within_self_is_allowed() {
+        // Unlike m, t can target inside the source range.
+        let mut buf = buf_with(&["a", "b", "c", "d"]);
+        let act = dispatch("1,3t2", &mut buf);
+        assert!(matches!(act, Action::Print(_)));
+        assert_eq!(buf.len(), 7);
+    }
+
+    #[test]
+    fn move_and_transfer_mark_buffer_modified() {
+        let mut buf = buf_with(&["a", "b", "c"]);
+        buf.mark_saved();
+        let _ = dispatch("1t3", &mut buf);
+        assert!(buf.is_modified());
+
+        let mut buf = buf_with(&["a", "b", "c"]);
+        buf.mark_saved();
+        let _ = dispatch("1m3", &mut buf);
         assert!(buf.is_modified());
     }
 }

@@ -91,6 +91,8 @@ Goodbye world
 | `[.,.]n` | `number` | Print with line numbers |
 | `[.,.]l` | `list` | Print with non-printing bytes as `\NNN` octal, ending `$` |
 | `[.,.+1]j` | `join` | Join the addressed lines into one (default: `.` and next) |
+| `[.,.]m DEST` | | Move the addressed lines to after DEST (0 = top) |
+| `[.,.]t DEST` | | Copy the addressed lines to after DEST (0 = top) |
 | `[.,.]s/re/new/[g]` | | Substitute: replace regex matches in addressed lines |
 | `[.,.]g/re/cmd` | | Global: run a command on every line matching a regex |
 | `[.,.]v/re/cmd` | | Inverse global: run a command on lines NOT matching |
