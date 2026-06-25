@@ -613,7 +613,7 @@ enum LoadOutcome {
 }
 
 fn load_file(filename: &str, buf: &mut Buffer) -> Result<LoadOutcome, String> {
-    enc::warn_if_non_utf8(filename);
+    let detected = enc::warn_if_non_utf8(filename);
     let content = match std::fs::read_to_string(filename) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -630,6 +630,9 @@ fn load_file(filename: &str, buf: &mut Buffer) -> Result<LoadOutcome, String> {
     }
     buf.set_filename(filename.to_string());
     buf.mark_saved();
+    if let Some(enc) = detected {
+        buf.mark_non_utf8_source(enc, filename.to_string());
+    }
 
     Ok(LoadOutcome::Loaded(bytes))
 }
@@ -887,6 +890,15 @@ fn run_write(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
     } else {
         filename_arg.to_string()
     };
+
+    // Refuse to overwrite a non-UTF-8 source: saving edits as UTF-8 would
+    // silently corrupt the original. The user can still `w <newname>` to a
+    // different file, or convert with iconv and reopen.
+    if let Some(enc) = buf.non_utf8_block(&filename) {
+        return Action::Error(format!(
+            "refusing to overwrite {filename} (loaded as {enc}); convert with iconv first, or use `w <newname>` to write elsewhere"
+        ));
+    }
 
     // Build the content. The one place we deviate from the normal
     // resolve flow: an empty buffer with no address spec is allowed

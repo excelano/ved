@@ -25,6 +25,11 @@ pub struct Buffer {
     // Last substitute's parsed pattern, replacement, and global
     // flag. Bare `s` reuses these. None until the first s/.../.../.
     last_subst: Option<(Vec<u8>, Vec<u8>, bool)>,
+    // (encoding name, source path) when the buffer was loaded from a
+    // non-UTF-8 file (UTF-7 or UTF-16). Write refuses to overwrite the
+    // source so edits-as-UTF-8 do not silently corrupt the original.
+    // Write-to-a-different-filename remains allowed as an escape valve.
+    non_utf8_source: Option<(String, String)>,
 }
 
 impl Buffer {
@@ -35,6 +40,23 @@ impl Buffer {
             modified: false,
             filename: None,
             last_subst: None,
+            non_utf8_source: None,
+        }
+    }
+
+    /// Remember that this buffer was loaded from a non-UTF-8 file so that
+    /// write refuses to overwrite it. Encoding is the display name (e.g.
+    /// "UTF-7"); path is the original load filename.
+    pub fn mark_non_utf8_source(&mut self, encoding: String, path: String) {
+        self.non_utf8_source = Some((encoding, path));
+    }
+
+    /// If write to `path` would overwrite the non-UTF-8 source, return the
+    /// detected encoding name. Otherwise return None and let the write proceed.
+    pub fn non_utf8_block(&self, path: &str) -> Option<&str> {
+        match &self.non_utf8_source {
+            Some((enc, src)) if src == path => Some(enc.as_str()),
+            _ => None,
         }
     }
 
