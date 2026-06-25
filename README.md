@@ -136,6 +136,28 @@ ved implements POSIX Basic Regular Expressions (BRE) with a hand-written engine.
 
 In replacement strings: `&` expands to the whole match, `\1`-`\9` expand to captured groups, `\&` is a literal ampersand, `\0NN` inserts the corresponding byte. The leading-zero requirement keeps `\1`-`\9` reserved for backreferences; `\037` is the ASCII unit separator, `\011` is tab, `\033` is escape.
 
+## As your default editor
+
+ed was the original Unix `$EDITOR`, and because ved is drop-in compatible it
+serves the same role: it takes the file as an argument, writes your changes back
+when you `w`, and exits zero on `q`. That is exactly the contract `git`,
+`crontab -e`, and `sudoedit` expect, so ved slots straight in:
+
+```sh
+export EDITOR=ved
+```
+
+`EDITOR` names the line-editor slot, which is where ved belongs — tools reach for
+it as the fallback when no full-screen editor is set. As with ed, ved opens to a
+silent prompt rather than printing the file, so `,p` is the first thing to type
+when git hands you a commit-message template: it prints the buffer, you edit it
+with the usual ed commands, then `w` and `q`. Quitting without writing leaves the
+file untouched, and git declines the empty commit.
+
+For the full-screen `VISUAL` slot, [nved](https://github.com/excelano/nved) is the
+companion — a cursor-driven descendant of ved that edits the printed block in
+place.
+
 ## Implementation
 
 2,684 lines of Rust across four modules, zero dependencies, 119 tests.
