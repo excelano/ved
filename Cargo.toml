@@ -1,7 +1,7 @@
 [package]
 name = "ved"
 homepage = "https://excelano.com/ved/"
-version = "0.1.5"
+version = "0.2.0"
 edition = "2024"
 description = "The verbose ed — a drop-in compatible ed clone with friendly errors and a built-in help system"
 license = "MIT"
