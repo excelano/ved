@@ -6,6 +6,7 @@
 mod address;
 mod bre;
 mod buffer;
+mod enc;
 
 use address::Spec;
 use buffer::Buffer;
@@ -612,6 +613,7 @@ enum LoadOutcome {
 }
 
 fn load_file(filename: &str, buf: &mut Buffer) -> Result<LoadOutcome, String> {
+    enc::warn_if_non_utf8(filename);
     let content = match std::fs::read_to_string(filename) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -681,6 +683,7 @@ fn run_read(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
         }
     };
 
+    enc::warn_if_non_utf8(&filename);
     let content = match std::fs::read_to_string(&filename) {
         Ok(c) => c,
         Err(e) => return Action::Error(format!("cannot open {filename}: {e}")),
