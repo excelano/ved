@@ -26,6 +26,16 @@ The installer downloads the right tarball for your platform from the GitHub rele
 
 To uninstall, remove the binary: `rm ~/.cargo/bin/ved`. ved stores nothing else on disk.
 
+### With Homebrew
+
+On macOS or Linux, so `brew upgrade` keeps it current:
+
+```sh
+brew tap excelano/tap
+brew trust excelano/tap   # one-time: Homebrew gates third-party taps behind explicit trust
+brew install ved
+```
+
 ### Debian and Ubuntu
 
 Install from the [Excelano apt repository](https://excelano.com/apt/), so `apt upgrade` keeps it current:
