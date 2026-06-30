@@ -13,7 +13,7 @@ ed's one-character error messages and silent operations make it notoriously hard
 The fastest path on Linux or macOS is the prebuilt-binary installer:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/excelano/ved/releases/latest/download/ved-installer.sh | sh
+curl -fsSL https://raw.githubusercontent.com/excelano/ved/main/install.sh | sh
 ```
 
 On Windows, in PowerShell:
@@ -24,7 +24,13 @@ powershell -ExecutionPolicy ByPass -c "irm https://github.com/excelano/ved/relea
 
 The installer downloads the right tarball for your platform from the GitHub release, verifies its checksum, and drops the binary into `~/.cargo/bin` (or the equivalent on Windows). If `ved` isn't found on your `PATH` after installation, ensure `~/.cargo/bin` is on it. Releases also ship raw tarballs (`ved-*.tar.xz` / `.zip`) for manual installation.
 
-To uninstall, remove the binary: `rm ~/.cargo/bin/ved`. ved stores nothing else on disk.
+To uninstall:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/excelano/ved/main/uninstall.sh | sh
+```
+
+That removes the binary from `~/.cargo/bin`; ved stores nothing else on disk. You can also just `rm ~/.cargo/bin/ved`.
 
 ### With Homebrew
 
