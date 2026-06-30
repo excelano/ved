@@ -71,7 +71,7 @@ If you have a Rust toolchain, install the latest release from [crates.io](https:
 cargo install ved
 ```
 
-## Build from source
+### Build from source
 
 ved requires only a Rust toolchain (1.85+ for edition 2024). No external crates, no C dependencies, no runtime.
 
