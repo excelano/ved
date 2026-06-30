@@ -10,21 +10,44 @@ ed's one-character error messages and silent operations make it notoriously hard
 
 ## Install
 
-The fastest path on Linux or macOS is the prebuilt-binary installer:
+### Debian and Ubuntu
+
+Add the [Excelano apt repository](https://excelano.com/apt/) once (one-time setup):
+
+```sh
+curl -fsSL https://excelano.com/apt/setup.sh | sudo sh
+```
+
+Then install it, so `apt upgrade` keeps it current:
+
+```sh
+sudo apt install ved
+```
+
+Both amd64 and arm64 packages ship with every release.
+
+### Homebrew
+
+On macOS or Linux, tap and trust the repository once — Homebrew gates third-party taps behind explicit trust (one-time setup):
+
+```sh
+brew tap excelano/tap
+brew trust excelano/tap
+```
+
+Then install it, so `brew upgrade` keeps it current:
+
+```sh
+brew install ved
+```
+
+### Prebuilt binary (Linux and macOS)
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/excelano/ved/main/install.sh | sh
 ```
 
-On Windows, in PowerShell:
-
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://github.com/excelano/ved/releases/latest/download/ved-installer.ps1 | iex"
-```
-
-The installer downloads the right tarball for your platform from the GitHub release, verifies its checksum, and drops the binary into `~/.cargo/bin` (or the equivalent on Windows). If `ved` isn't found on your `PATH` after installation, ensure `~/.cargo/bin` is on it. Releases also ship raw tarballs (`ved-*.tar.xz` / `.zip`) for manual installation.
-
-To uninstall:
+The installer downloads the right tarball for your platform from the GitHub release, verifies its checksum, and drops the binary into `~/.cargo/bin` (or the equivalent on Windows). If `ved` isn't found on your `PATH` after installation, ensure `~/.cargo/bin` is on it. Releases also ship raw tarballs (`ved-*.tar.xz` / `.zip`) for manual installation. To uninstall:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/excelano/ved/main/uninstall.sh | sh
@@ -32,26 +55,21 @@ curl -fsSL https://raw.githubusercontent.com/excelano/ved/main/uninstall.sh | sh
 
 That removes the binary from `~/.cargo/bin`; ved stores nothing else on disk. You can also just `rm ~/.cargo/bin/ved`.
 
-### With Homebrew
+### Windows
 
-On macOS or Linux, so `brew upgrade` keeps it current:
+In PowerShell:
 
-```sh
-brew tap excelano/tap
-brew trust excelano/tap   # one-time: Homebrew gates third-party taps behind explicit trust
-brew install ved
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/excelano/ved/releases/latest/download/ved-installer.ps1 | iex"
 ```
 
-### Debian and Ubuntu
+### Cargo
 
-Install from the [Excelano apt repository](https://excelano.com/apt/), so `apt upgrade` keeps it current:
+If you have a Rust toolchain, install the latest release from [crates.io](https://crates.io/crates/ved):
 
 ```sh
-curl -fsSL https://excelano.com/apt/setup.sh | sudo sh
-sudo apt install ved
+cargo install ved
 ```
-
-Both amd64 and arm64 packages ship with every release.
 
 ## Build from source
 
