@@ -57,7 +57,13 @@ That removes the binary from `~/.cargo/bin`; ved stores nothing else on disk. Yo
 
 ### Windows
 
-In PowerShell:
+With [WinGet](https://learn.microsoft.com/windows/package-manager/), so `winget upgrade` keeps it current:
+
+```powershell
+winget install Excelano.ved
+```
+
+Or run the standalone installer in PowerShell:
 
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://github.com/excelano/ved/releases/latest/download/ved-installer.ps1 | iex"
