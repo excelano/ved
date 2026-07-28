@@ -6,6 +6,29 @@ project *is* — several items below are gated on it, and one is rejected by it
 outright. See `PLAN.md` for the slice history and `SECURITY.md` for the support
 policy.
 
+> **Status (2026-07-27):** shipped on crates.io, apt, brew, and winget; run
+> `fleet ved` for the current version. 119 tests. No open issues or PRs.
+
+**When you return, start here** (recommended order):
+
+1. **Compound base-anchored offset addressing** — `$-5`, `5-3`, `/re/+1` (queued,
+   below). The entry already names it as the right pick: a clean, self-contained
+   address-parser job with no dependency gate to clear. nved shipped the
+   `$`-anchored subset; ved is the ed authority and should add the general form.
+2. **Search addresses** — `/pattern/`, `?pattern?` (below). The
+   highest-remaining-impact item, and mostly a wiring job: the BRE engine in
+   `src/bre.rs` exists, the address resolver just never got the hook. **Read it as
+   a posture decision first** — this file names it as the most likely reason the
+   pure-stdlib rule would ever bend, so decide that before writing code.
+3. **`u` — undo** (below). Single-level, needs buffer snapshotting before a
+   mutating command. Self-contained once the snapshot point is chosen.
+
+Everything below those is either small POSIX-fidelity work, gated on relaxing
+the zero-dependency rule (Ctrl-C handling, input-mode commands inside `g`/`v` —
+`std` has no ergonomic signal handling), or rejected by project identity. The
+in-block input editor is the rejected one, and it is a stronger no than the
+gated items: that idea lives in nved now.
+
 ---
 
 ## Queued
