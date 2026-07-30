@@ -19,6 +19,9 @@
 //
 // Search addresses (/foo/, ?foo?) wait for slice 5 when the regex
 // engine arrives. Compound expressions like $-5 also wait.
+//
+// Author: David M. Anderson
+// Built with AI assistance (Claude, Anthropic)
 
 use crate::buffer::Buffer;
 

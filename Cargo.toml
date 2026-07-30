@@ -3,7 +3,7 @@ name = "ved"
 homepage = "https://excelano.com/ved/"
 version = "0.2.0"
 edition = "2024"
-description = "The verbose ed — a drop-in compatible ed clone with friendly errors and a built-in help system"
+description = "The verbose ed — an ed clone with friendly errors and a built-in help system"
 license = "MIT"
 authors = ["David M. Anderson"]
 repository = "https://github.com/excelano/ved"
@@ -15,11 +15,11 @@ categories = ["command-line-utilities", "text-editors"]
 [package.metadata.deb]
 maintainer = "David M. Anderson <david.anderson@excelano.com>"
 extended-description = """
-ved is a drop-in compatible clone of ed, the original Unix line editor, written
-in pure-stdlib Rust. It adds friendly error messages, command confirmations,
+ved is a verbose clone of ed, the original Unix line editor, written in
+pure-stdlib Rust. It adds friendly error messages, command confirmations,
 long-form command aliases, and a built-in help reference while preserving
-strict compatibility so any script written for real ed runs against ved
-unchanged. Full tutorial at https://excelano.github.io/ved/."""
+close compatibility so most scripts written for real ed run against ved
+unchanged. Full tutorial at https://excelano.com/ved/tutorial/."""
 section = "editors"
 priority = "optional"
 depends = "libc6, libgcc-s1"

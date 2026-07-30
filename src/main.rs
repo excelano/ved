@@ -1,7 +1,10 @@
 // ved - the verbose ed
-// A drop-in compatible clone of ed with friendly errors,
+// A verbose clone of ed with friendly errors,
 // confirmations, long-form command aliases, and a built-in
 // help system. Written in pure-stdlib Rust.
+//
+// Author: David M. Anderson
+// Built with AI assistance (Claude, Anthropic)
 
 mod address;
 mod bre;

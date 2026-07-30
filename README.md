@@ -1,12 +1,12 @@
 # ved — the verbose ed
 
-A drop-in compatible clone of [ed](https://www.gnu.org/software/ed/), the original Unix line editor, written in pure-stdlib Rust. ved adds friendly error messages, command confirmations, long-form command aliases, and a built-in help reference while preserving strict compatibility so any script written for real ed runs against ved unchanged.
+A verbose clone of [ed](https://www.gnu.org/software/ed/), the original Unix line editor, written in pure-stdlib Rust. ved adds friendly error messages, command confirmations, long-form command aliases, and a built-in help reference while preserving close compatibility so most scripts written for real ed run against ved unchanged.
 
 **Full tutorial:** [https://excelano.com/ved/tutorial/](https://excelano.com/ved/tutorial/)
 
 ## Why
 
-ed's one-character error messages and silent operations make it notoriously hard to learn. ved keeps ed's interface and behavior but tells you what happened: `deleted 3 lines (2-4)` instead of silence, `? no match` instead of `?`, and `help` prints a command reference without leaving the editor. If you already know ed, ved works exactly the same. If you're learning, ved explains what's going on.
+ed's one-character error messages and silent operations make it notoriously hard to learn. ved keeps ed's interface and behavior but tells you what happened: `deleted 3 lines (2-4)` instead of silence, `? no match` instead of `?`, and `help` prints a command reference without leaving the editor. If you already know ed, ved will be immediately familiar. If you're learning, ved explains what's going on.
 
 ## Install
 
@@ -160,7 +160,7 @@ Addresses specify which lines a command operates on. Most commands default to th
 
 ## Regular expressions
 
-ved implements POSIX Basic Regular Expressions (BRE) with a hand-written engine. No external regex library.
+ved implements the core of POSIX Basic Regular Expressions (BRE) with its own engine. No external regex library.
 
 | Syntax | Meaning |
 |---|---|
@@ -178,7 +178,7 @@ In replacement strings: `&` expands to the whole match, `\1`-`\9` expand to capt
 
 ## As your default editor
 
-ed was the original Unix `$EDITOR`, and because ved is drop-in compatible it
+ed was the original Unix `$EDITOR`, and because ved follows ed's interface it
 serves the same role: it takes the file as an argument, writes your changes back
 when you `w`, and exits zero on `q`. That is exactly the contract `git`,
 `crontab -e`, and `sudoedit` expect, so ved slots straight in:
@@ -200,14 +200,15 @@ place.
 
 ## Implementation
 
-2,684 lines of Rust across four modules, zero dependencies, 119 tests.
+Five modules of pure-stdlib Rust. Zero dependencies, no external crates, no C.
 
-| Module | Lines | Purpose |
-|---|---|---|
-| `main.rs` | 1260 | REPL, command dispatch, substitute/global/write/read |
-| `bre.rs` | 1057 | BRE regex engine: compiler, matcher, replacement expander |
-| `address.rs` | 236 | Address parser and resolver |
-| `buffer.rs` | 131 | Line buffer with current-line tracking |
+| Module | Purpose |
+|---|---|
+| `main.rs` | REPL, command dispatch, substitute/global/write/read |
+| `bre.rs` | BRE regex engine: compiler, matcher, replacement expander |
+| `address.rs` | Address parser and resolver |
+| `buffer.rs` | Line buffer with current-line tracking |
+| `enc.rs` | Encoding sniff: warns on UTF-7/UTF-16 input before the read fails |
 
 The BRE engine started as a translation of Rob Pike's ~30-line recursive matcher from "The Practice of Programming," then grew bottom-up through a compile step (inspired by Ken Thompson's original ed), bracket expressions, capturing groups, and backreferences. The full history is in the git log.
 
@@ -221,3 +222,5 @@ Two limitations are inherited from ed and intentional, since changing them would
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+Author: David M. Anderson. Built with the assistance of Claude (Anthropic).

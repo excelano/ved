@@ -16,6 +16,9 @@
 // `filename` remembers the last filename used by `w`, so a bare `w`
 // after `w foo.txt` writes back to foo.txt. Slice 11 will also set
 // this when ved is invoked with a filename argument.
+//
+// Author: David M. Anderson
+// Built with AI assistance (Claude, Anthropic)
 
 pub struct Buffer {
     lines: Vec<String>,

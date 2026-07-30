@@ -24,6 +24,9 @@
 // Known limitation: \(...\)* (star applied to a whole group) is
 // not yet supported. Star can only apply to a single atom. This
 // is uncommon in ed usage and can be added later if needed.
+//
+// Author: David M. Anderson
+// Built with AI assistance (Claude, Anthropic)
 
 /// One matchable thing: a literal byte, any-byte wildcard, or
 /// a bracket character class.

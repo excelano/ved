@@ -3,6 +3,9 @@
 // pure-stdlib. Detection rules are deliberately narrow — byte-perfect
 // signatures only, no heuristics — and mirror the warning wording used by
 // encsniff so the user-visible message is consistent across siblings.
+//
+// Author: David M. Anderson
+// Built with AI assistance (Claude, Anthropic)
 
 use std::ffi::OsString;
 use std::fmt;
