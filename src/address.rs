@@ -115,11 +115,7 @@ impl Spec {
         self.resolve_with(buf, (Address::Current, Address::Offset(1)))
     }
 
-    fn resolve_with(
-        &self,
-        buf: &Buffer,
-        default: (Address, Address),
-    ) -> Result<Range, String> {
+    fn resolve_with(&self, buf: &Buffer, default: (Address, Address)) -> Result<Range, String> {
         if buf.is_empty() {
             return Err("invalid address".to_string());
         }
@@ -155,9 +151,7 @@ pub fn parse_dest<'a>(input: &'a str, buf: &Buffer) -> Result<(usize, &'a str), 
     if spec.end.is_some() {
         return Err("destination must be a single address".to_string());
     }
-    let addr = spec
-        .start
-        .ok_or_else(|| "no destination".to_string())?;
+    let addr = spec.start.ok_or_else(|| "no destination".to_string())?;
     let n = resolve_one(&addr, buf)?;
     if n > buf.len() {
         return Err("invalid address".to_string());

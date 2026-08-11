@@ -89,7 +89,7 @@ impl Match {
     /// Returns None if the group wasn't part of the pattern or
     /// didn't participate in the match.
     pub fn group(&self, n: usize) -> Option<(usize, usize)> {
-        if n >= 1 && n <= 9 && self.caps.valid[n - 1] {
+        if (1..=9).contains(&n) && self.caps.valid[n - 1] {
             Some((self.caps.start[n - 1], self.caps.end[n - 1]))
         } else {
             None
@@ -133,8 +133,7 @@ impl Regex {
                     && (b'0'..=b'7').contains(&pattern[i + 2])
                     && (b'0'..=b'7').contains(&pattern[i + 3])
                 {
-                    let byte = (pattern[i + 2] - b'0') * 8
-                        + (pattern[i + 3] - b'0');
+                    let byte = (pattern[i + 2] - b'0') * 8 + (pattern[i + 3] - b'0');
                     let atom = Atom::Literal(byte);
                     i += 4;
                     if i < pattern.len() && pattern[i] == b'*' {
@@ -203,16 +202,13 @@ impl Regex {
     /// position of the first match, or None.
     pub fn find(&self, text: &[u8]) -> Option<Match> {
         let elements = &self.elements;
-        let anchored = !elements.is_empty()
-            && matches!(elements[0], Element::Caret);
+        let anchored = !elements.is_empty() && matches!(elements[0], Element::Caret);
         let elems = if anchored { &elements[1..] } else { elements };
 
         let mut offset = 0;
         loop {
             let caps = Caps::new();
-            if let Some((len, caps)) =
-                self.match_here(elems, &text[offset..], offset, caps, text)
-            {
+            if let Some((len, caps)) = self.match_here(elems, &text[offset..], offset, caps, text) {
                 return Some(Match {
                     start: offset,
                     end: offset + len,
@@ -270,14 +266,8 @@ impl Regex {
                 let captured = &full_text[caps.start[n - 1]..caps.end[n - 1]];
                 if text.starts_with(captured) {
                     let clen = captured.len();
-                    self.match_here(
-                        &elements[1..],
-                        &text[clen..],
-                        pos + clen,
-                        caps,
-                        full_text,
-                    )
-                    .map(|(len, caps)| (len + clen, caps))
+                    self.match_here(&elements[1..], &text[clen..], pos + clen, caps, full_text)
+                        .map(|(len, caps)| (len + clen, caps))
                 } else {
                     None
                 }
@@ -287,14 +277,8 @@ impl Regex {
             }
             Element::One(atom) => {
                 if !text.is_empty() && atom_matches(atom, text[0]) {
-                    self.match_here(
-                        &elements[1..],
-                        &text[1..],
-                        pos + 1,
-                        caps,
-                        full_text,
-                    )
-                    .map(|(len, caps)| (len + 1, caps))
+                    self.match_here(&elements[1..], &text[1..], pos + 1, caps, full_text)
+                        .map(|(len, caps)| (len + 1, caps))
                 } else {
                     None
                 }
@@ -320,13 +304,9 @@ impl Regex {
             max += 1;
         }
         loop {
-            if let Some((len, caps)) = self.match_here(
-                elements,
-                &text[max..],
-                pos + max,
-                caps,
-                full_text,
-            ) {
+            if let Some((len, caps)) =
+                self.match_here(elements, &text[max..], pos + max, caps, full_text)
+            {
                 return Some((max + len, caps));
             }
             if max == 0 {
@@ -377,10 +357,7 @@ fn parse_bracket(pattern: &[u8], start: usize) -> (Atom, usize) {
     while i < pattern.len() && pattern[i] != b']' {
         // Range: lo-hi, but only when - is followed by a char
         // that isn't the closing ].
-        if i + 2 < pattern.len()
-            && pattern[i + 1] == b'-'
-            && pattern[i + 2] != b']'
-        {
+        if i + 2 < pattern.len() && pattern[i + 1] == b'-' && pattern[i + 2] != b']' {
             let lo = pattern[i];
             let hi = pattern[i + 2];
             for c in lo..=hi {
@@ -442,8 +419,7 @@ pub fn expand_replacement(replacement: &[u8], m: &Match, text: &[u8]) -> Vec<u8>
                     && (b'0'..=b'7').contains(&replacement[i + 2])
                     && (b'0'..=b'7').contains(&replacement[i + 3])
                 {
-                    let byte = (replacement[i + 2] - b'0') * 8
-                        + (replacement[i + 3] - b'0');
+                    let byte = (replacement[i + 2] - b'0') * 8 + (replacement[i + 3] - b'0');
                     result.push(byte);
                     i += 4;
                     continue;
@@ -839,7 +815,9 @@ mod tests {
 
     #[test]
     fn group_with_class() {
-        let m = Regex::compile(b"^\\([a-z][a-z]*\\)$").find(b"hello").unwrap();
+        let m = Regex::compile(b"^\\([a-z][a-z]*\\)$")
+            .find(b"hello")
+            .unwrap();
         assert_eq!(m.group(1), Some((0, 5)));
     }
 
@@ -924,18 +902,12 @@ mod tests {
     #[test]
     fn backref_multi_char() {
         // \(hello\).*\1 matches "hello world hello"
-        assert!(has_match(
-            b"^\\(hello\\).*\\1$",
-            b"hello world hello"
-        ));
+        assert!(has_match(b"^\\(hello\\).*\\1$", b"hello world hello"));
     }
 
     #[test]
     fn backref_multi_char_rejects() {
-        assert!(!has_match(
-            b"^\\(hello\\).*\\1$",
-            b"hello world help"
-        ));
+        assert!(!has_match(b"^\\(hello\\).*\\1$", b"hello world help"));
     }
 
     #[test]

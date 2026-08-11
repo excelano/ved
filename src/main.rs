@@ -121,12 +121,11 @@ fn run_repl(prompt: Option<&str>, filename: Option<&str>) -> ExitCode {
     loop {
         // ed shows the prompt only in command mode, never in input
         // mode — input mode is meant to feel like raw typing.
-        if !input_mode {
-            if let Some(p) = prompt {
-                if write!(out, "{p}").is_err() || out.flush().is_err() {
-                    return ExitCode::FAILURE;
-                }
-            }
+        if !input_mode
+            && let Some(p) = prompt
+            && (write!(out, "{p}").is_err() || out.flush().is_err())
+        {
+            return ExitCode::FAILURE;
         }
 
         line.clear();
@@ -244,10 +243,10 @@ fn dispatch(cmd: &str, buf: &mut Buffer) -> Action {
             // Append after the addressed line (default: current).
             // On an empty buffer, current is 0 and append_after(0)
             // inserts at the start — correct.
-            if !buf.is_empty() {
-                if let Ok(r) = spec.resolve(buf) {
-                    buf.set_current(r.end);
-                }
+            if !buf.is_empty()
+                && let Ok(r) = spec.resolve(buf)
+            {
+                buf.set_current(r.end);
             }
             return Action::EnterInputMode;
         }
@@ -508,10 +507,8 @@ fn run_move(spec: &Spec, buf: &mut Buffer, dest_arg: &str) -> Action {
     buf.delete_range(range.start, range.end);
     // Deletion shifts everything past `range.end` down by `count`.
     let adjusted = if dest > range.end { dest - count } else { dest };
-    let mut at = adjusted;
-    for line in lines {
+    for (at, line) in (adjusted..).zip(lines) {
         buf.append_after(at, line);
-        at += 1;
     }
     buf.set_current(adjusted + count);
     Action::Print(format!(
@@ -537,10 +534,8 @@ fn run_transfer(spec: &Spec, buf: &mut Buffer, dest_arg: &str) -> Action {
         .filter_map(|n| buf.line(n).map(str::to_string))
         .collect();
     let count = lines.len();
-    let mut at = dest;
-    for line in lines {
+    for (at, line) in (dest..).zip(lines) {
         buf.append_after(at, line);
-        at += 1;
     }
     buf.set_current(dest + count);
     Action::Print(format!(
@@ -696,10 +691,8 @@ fn run_read(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
     };
     let bytes = content.len();
 
-    let mut insert_at = after;
-    for line in content.lines() {
+    for (insert_at, line) in (after..).zip(content.lines()) {
         buf.append_after(insert_at, line.to_string());
-        insert_at += 1;
     }
 
     if buf.filename().is_none() {
@@ -815,11 +808,7 @@ fn scan_delimited(input: &[u8], delim: u8) -> Option<(Vec<u8>, &[u8])> {
 }
 
 /// Replace the first match in `text`. Returns None if no match.
-fn substitute_first(
-    re: &bre::Regex,
-    text: &[u8],
-    replacement: &[u8],
-) -> Option<Vec<u8>> {
+fn substitute_first(re: &bre::Regex, text: &[u8], replacement: &[u8]) -> Option<Vec<u8>> {
     let m = re.find(text)?;
     let mut result = Vec::new();
     result.extend_from_slice(&text[..m.start]);
@@ -830,11 +819,7 @@ fn substitute_first(
 
 /// Replace all non-overlapping matches in `text`. Returns None
 /// if no match was found at all.
-fn substitute_all(
-    re: &bre::Regex,
-    text: &[u8],
-    replacement: &[u8],
-) -> Option<Vec<u8>> {
+fn substitute_all(re: &bre::Regex, text: &[u8], replacement: &[u8]) -> Option<Vec<u8>> {
     let mut result = Vec::new();
     let mut pos = 0;
     let mut matched = false;
@@ -849,9 +834,7 @@ fn substitute_all(
                 // For expand_replacement, the Match positions are
                 // relative to the slice we searched, but we need
                 // them relative to that same slice for text lookup.
-                result.extend_from_slice(
-                    &bre::expand_replacement(replacement, &m, &text[pos..]),
-                );
+                result.extend_from_slice(&bre::expand_replacement(replacement, &m, &text[pos..]));
                 // Advance past the match. If the match was empty,
                 // advance by one byte to avoid an infinite loop.
                 if abs_end == abs_start {
@@ -870,11 +853,7 @@ fn substitute_all(
         }
     }
 
-    if matched {
-        Some(result)
-    } else {
-        None
-    }
+    if matched { Some(result) } else { None }
 }
 
 /// Write the addressed range to a file. Empty spec defaults to the
