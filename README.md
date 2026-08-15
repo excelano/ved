@@ -194,9 +194,9 @@ when git hands you a commit-message template: it prints the buffer, you edit it
 with the usual ed commands, then `w` and `q`. Quitting without writing leaves the
 file untouched, and git declines the empty commit.
 
-For the full-screen `VISUAL` slot, [nved](https://github.com/excelano/nved) is the
-companion — a cursor-driven descendant of ved that edits the printed block in
-place.
+For the `VISUAL` slot — the interactive, cursor-driven editor — [nved](https://github.com/excelano/nved)
+is the companion: a descendant of ved that edits the printed block in place
+without taking over the screen or disturbing your scrollback.
 
 ## Implementation
 
