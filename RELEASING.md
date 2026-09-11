@@ -9,11 +9,11 @@ of its siblings.
 | | |
 |---|---|
 | Loop | cargo-dist |
-| Version lives in | `version` in `Cargo.toml` |
+| Version lives in | `Cargo.toml` |
 | `apt-ship` argument | `ved` |
-| crate | `ved` |
-| winget package | `Excelano.ved` |
-| Windows asset | `ved-x86_64-pc-windows-msvc.zip` |
+| Packages per release | 2, amd64 arm64 |
+| crates | `ved` |
+| winget package | `Excelano.ved` — `ved-x86_64-pc-windows-msvc.zip` |
 
 **The release builds** the five platform tarballs, the shell and PowerShell
 installers, the Homebrew formula, and the checksums, then creates the GitHub
