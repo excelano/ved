@@ -290,19 +290,25 @@ fn dispatch(cmd: &str, buf: &mut Buffer) -> Action {
         _ => {}
     }
 
-    // Stage two: commands with arguments. Match on the first byte
-    // and pass the rest as the argument string.
-    let first = rest.as_bytes()[0];
-    let args = &rest[1..];
+    // Stage two: commands with arguments. Take the command letter as
+    // a character and pass the rest as the argument string. Splitting
+    // with the iterator rather than a byte offset keeps a multi-byte
+    // first character from slicing `rest` off a char boundary.
+    let mut chars = rest.chars();
+    let first = match chars.next() {
+        Some(c) => c,
+        None => return Action::Error(format!("unknown command: {rest}")),
+    };
+    let args = chars.as_str();
     match first {
-        b'e' => run_edit(buf, args),
-        b'r' => run_read(&spec, buf, args),
-        b'g' => run_global(&spec, buf, args, false),
-        b'v' => run_global(&spec, buf, args, true),
-        b's' => run_substitute(&spec, buf, args),
-        b'w' => run_write(&spec, buf, args),
-        b'm' => run_move(&spec, buf, args),
-        b't' => run_transfer(&spec, buf, args),
+        'e' => run_edit(buf, args),
+        'r' => run_read(&spec, buf, args),
+        'g' => run_global(&spec, buf, args, false),
+        'v' => run_global(&spec, buf, args, true),
+        's' => run_substitute(&spec, buf, args),
+        'w' => run_write(&spec, buf, args),
+        'm' => run_move(&spec, buf, args),
+        't' => run_transfer(&spec, buf, args),
         _ => Action::Error(format!("unknown command: {rest}")),
     }
 }
@@ -1253,5 +1259,29 @@ mod tests {
         buf.replace_line(1, "one two three".to_string());
         let _ = dispatch("s", &mut buf);
         assert_eq!(buf.line(1), Some("one TWO three"));
+    }
+
+    // ── non-ASCII input ──────────────────────────────────────
+
+    #[test]
+    fn non_ascii_command_letter_is_an_error_not_a_panic() {
+        let mut buf = buf_with(&["a", "b"]);
+        // The command letter is taken as a character, so a multi-byte
+        // one reports an unknown command instead of slicing `rest`
+        // off a char boundary.
+        assert!(matches!(dispatch("\u{e9}", &mut buf), Action::Error(_)));
+        assert!(matches!(
+            dispatch("\u{4e16}\u{754c}", &mut buf),
+            Action::Error(_)
+        ));
+        // With an address in front, and with trailing arguments.
+        assert!(matches!(dispatch("1\u{e9}", &mut buf), Action::Error(_)));
+        assert!(matches!(
+            dispatch("1,2\u{e9}foo", &mut buf),
+            Action::Error(_)
+        ));
+        // The buffer is untouched by any of them.
+        assert_eq!(buf.len(), 2);
+        assert_eq!(buf.line(1), Some("a"));
     }
 }
