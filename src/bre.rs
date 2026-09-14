@@ -49,22 +49,25 @@ enum Element {
     BackRef(usize),
 }
 
+/// The number of capturing groups a BRE can address, as \1-\9.
+const NGROUPS: usize = 9;
+
 /// Capture state for up to 9 groups, threaded through matching
 /// by value. Small enough to copy on every recursive call (9
 /// usizes + 9 usizes + 9 bools = ~153 bytes).
 #[derive(Debug, Clone, Copy)]
 struct Caps {
-    start: [usize; 9],
-    end: [usize; 9],
-    valid: [bool; 9],
+    start: [usize; NGROUPS],
+    end: [usize; NGROUPS],
+    valid: [bool; NGROUPS],
 }
 
 impl Caps {
     fn new() -> Self {
         Caps {
-            start: [0; 9],
-            end: [0; 9],
-            valid: [false; 9],
+            start: [0; NGROUPS],
+            end: [0; NGROUPS],
+            valid: [false; NGROUPS],
         }
     }
 }
@@ -89,7 +92,7 @@ impl Match {
     /// Returns None if the group wasn't part of the pattern or
     /// didn't participate in the match.
     pub fn group(&self, n: usize) -> Option<(usize, usize)> {
-        if (1..=9).contains(&n) && self.caps.valid[n - 1] {
+        if (1..=NGROUPS).contains(&n) && self.caps.valid[n - 1] {
             Some((self.caps.start[n - 1], self.caps.end[n - 1]))
         } else {
             None
@@ -250,13 +253,19 @@ impl Regex {
             Element::Caret => None,
             Element::GroupStart(n) => {
                 let mut caps = caps;
-                caps.start[n - 1] = pos;
+                // Only \1-\9 are addressable, so Caps has nine slots.
+                // A tenth group still delimits, it just isn't recorded.
+                if *n <= NGROUPS {
+                    caps.start[n - 1] = pos;
+                }
                 self.match_here(&elements[1..], text, pos, caps, full_text)
             }
             Element::GroupEnd(n) => {
                 let mut caps = caps;
-                caps.end[n - 1] = pos;
-                caps.valid[n - 1] = true;
+                if *n <= NGROUPS {
+                    caps.end[n - 1] = pos;
+                    caps.valid[n - 1] = true;
+                }
                 self.match_here(&elements[1..], text, pos, caps, full_text)
             }
             Element::BackRef(n) => {
@@ -1028,5 +1037,28 @@ mod tests {
             expand_replacement(b"&\\037\\1", &m, text),
             b"foo bar\x1fbar"
         );
+    }
+
+    // ── more groups than there are slots ─────────────────────
+
+    #[test]
+    fn tenth_group_delimits_without_being_recorded() {
+        // Only \\1-\\9 are addressable. A tenth group must still take
+        // part in the match rather than panicking on Caps' ninth slot.
+        let text = b"abcdefghij";
+        let pat = b"\\(a\\)\\(b\\)\\(c\\)\\(d\\)\\(e\\)\\(f\\)\\(g\\)\\(h\\)\\(i\\)\\(j\\)";
+        let m = Regex::compile(pat)
+            .find(text)
+            .expect("pattern should match");
+        assert_eq!((m.start, m.end), (0, 10));
+        assert_eq!(m.group(9), Some((8, 9)));
+        assert_eq!(m.group(10), None);
+    }
+
+    #[test]
+    fn many_groups_do_not_panic() {
+        let text = b"aaaaaaaaaaaaaaa";
+        let pat = b"\\(a\\)".repeat(15);
+        assert!(Regex::compile(&pat).find(text).is_some());
     }
 }
