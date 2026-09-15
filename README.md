@@ -41,32 +41,12 @@ Then install it, so `brew upgrade` keeps it current:
 brew install ved
 ```
 
-### Prebuilt binary (Linux and macOS)
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/excelano/ved/main/install.sh | sh
-```
-
-The installer downloads the right tarball for your platform from the GitHub release, verifies its checksum, and drops the binary into `~/.cargo/bin` (or the equivalent on Windows). If `ved` isn't found on your `PATH` after installation, ensure `~/.cargo/bin` is on it. Releases also ship raw tarballs (`ved-*.tar.xz` / `.zip`) for manual installation. To uninstall:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/excelano/ved/main/uninstall.sh | sh
-```
-
-That removes the binary from `~/.cargo/bin`; ved stores nothing else on disk. You can also just `rm ~/.cargo/bin/ved`.
-
 ### Windows
 
 With [WinGet](https://learn.microsoft.com/windows/package-manager/), so `winget upgrade` keeps it current:
 
 ```powershell
 winget install Excelano.ved
-```
-
-Or run the standalone installer in PowerShell:
-
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://github.com/excelano/ved/releases/latest/download/ved-installer.ps1 | iex"
 ```
 
 ### Cargo
