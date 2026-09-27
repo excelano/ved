@@ -947,6 +947,68 @@ mod tests {
         p
     }
 
+    // ── CLI argument parsing ───────────────────────────────────
+    // -h/--help and -V/--version aren't covered here: both call
+    // std::process::exit directly inside parse_args, which would
+    // kill the test binary rather than return.
+
+    #[test]
+    fn parse_args_with_nothing_returns_no_prompt_or_filename() {
+        let (prompt, filename) = parse_args(&[]).unwrap();
+        assert_eq!(prompt, None);
+        assert_eq!(filename, None);
+    }
+
+    #[test]
+    fn parse_args_prompt_flag_takes_the_next_arg() {
+        let args = ["-p".to_string(), "custom> ".to_string()];
+        let (prompt, filename) = parse_args(&args).unwrap();
+        assert_eq!(prompt, Some("custom> ".to_string()));
+        assert_eq!(filename, None);
+    }
+
+    #[test]
+    fn parse_args_long_prompt_flag_is_the_same_as_short() {
+        let args = ["--prompt".to_string(), "custom> ".to_string()];
+        let (prompt, _) = parse_args(&args).unwrap();
+        assert_eq!(prompt, Some("custom> ".to_string()));
+    }
+
+    #[test]
+    fn parse_args_prompt_equals_form() {
+        let args = ["--prompt=custom> ".to_string()];
+        let (prompt, _) = parse_args(&args).unwrap();
+        assert_eq!(prompt, Some("custom> ".to_string()));
+    }
+
+    #[test]
+    fn parse_args_prompt_flag_with_no_value_errors() {
+        let args = ["-p".to_string()];
+        assert!(parse_args(&args).is_err());
+    }
+
+    #[test]
+    fn parse_args_unknown_flag_errors() {
+        let args = ["--nope".to_string()];
+        assert!(parse_args(&args).is_err());
+    }
+
+    #[test]
+    fn parse_args_bare_word_is_a_filename() {
+        let args = ["notes.txt".to_string()];
+        let (prompt, filename) = parse_args(&args).unwrap();
+        assert_eq!(prompt, None);
+        assert_eq!(filename, Some("notes.txt".to_string()));
+    }
+
+    #[test]
+    fn parse_args_prompt_and_filename_together() {
+        let args = ["-p".to_string(), "> ".to_string(), "notes.txt".to_string()];
+        let (prompt, filename) = parse_args(&args).unwrap();
+        assert_eq!(prompt, Some("> ".to_string()));
+        assert_eq!(filename, Some("notes.txt".to_string()));
+    }
+
     #[test]
     fn missing_file_loads_as_new_file() {
         let path = temp_path("newfile");
@@ -1097,6 +1159,22 @@ mod tests {
         assert!(!buf.is_modified());
         let _ = dispatch("1,2j", &mut buf);
         assert!(buf.is_modified());
+    }
+
+    // ── H (help) command ──────────────────────────────────────
+
+    #[test]
+    fn help_command_prints_command_summary() {
+        let mut buf = buf_with(&["a"]);
+        let act = dispatch("H", &mut buf);
+        assert!(matches!(act, Action::Print(ref s) if s.contains("ved commands")));
+    }
+
+    #[test]
+    fn help_long_form_alias_works() {
+        let mut buf = buf_with(&["a"]);
+        let act = dispatch("help", &mut buf);
+        assert!(matches!(act, Action::Print(_)));
     }
 
     // ── m (move) command ─────────────────────────────────────
