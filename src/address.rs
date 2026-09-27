@@ -6,7 +6,7 @@
 // against a `Buffer` to produce a concrete `Range` of 1-indexed
 // line numbers.
 //
-// Address forms recognized in slice 3:
+// Address forms recognized:
 //   5         absolute line number
 //   .         current line
 //   $         last line
@@ -16,13 +16,15 @@
 //   ;         shorthand for .,$  (current to end)
 //   2,4       a range from line 2 to line 4
 //   .,+5      from current to current+5
+//   /foo/     next line matching foo, searching forward with wraparound
+//   ?foo?     next line matching foo, searching backward with wraparound
 //
-// Search addresses (/foo/, ?foo?) wait for slice 5 when the regex
-// engine arrives. Compound expressions like $-5 also wait.
+// Compound expressions like $-5 are not supported.
 //
 // Author: David M. Anderson
 // Built with AI assistance (Claude, Anthropic)
 
+use crate::bre;
 use crate::buffer::Buffer;
 
 pub enum Address {
@@ -30,6 +32,7 @@ pub enum Address {
     Current,
     Last,
     Offset(isize),
+    Search { pattern: Vec<u8>, forward: bool },
 }
 
 pub struct Spec {
@@ -191,8 +194,48 @@ fn parse_one(input: &str) -> Result<(Option<Address>, &str), String> {
                 .map_err(|_| "invalid address".to_string())?;
             Ok((Some(Address::Number(n)), rest))
         }
+        b'/' | b'?' => {
+            let forward = first == b'/';
+            let (pattern, rest) = scan_search_pattern(&input[1..], first);
+            Ok((Some(Address::Search { pattern, forward }), rest))
+        }
         _ => Ok((None, input)),
     }
+}
+
+/// Scan a `delim`-terminated search pattern starting right after the
+/// opening delimiter. Handles backslash escapes the same way
+/// `scan_delimited` in main.rs does for substitute patterns: an
+/// escaped delimiter becomes a literal delimiter, other escapes pass
+/// through unchanged for the regex engine to interpret.
+///
+/// The closing delimiter may be omitted if the pattern runs to the
+/// end of the line (`/foo` with no trailing `/`), matching ed: the
+/// whole remainder becomes the pattern and there is no command
+/// letter left to parse, so the caller falls back to its bare-address
+/// "print" default.
+fn scan_search_pattern(input: &str, delim: u8) -> (Vec<u8>, &str) {
+    let bytes = input.as_bytes();
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == delim {
+            return (result, &input[i + 1..]);
+        }
+        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            if bytes[i + 1] == delim {
+                result.push(delim);
+            } else {
+                result.push(bytes[i]);
+                result.push(bytes[i + 1]);
+            }
+            i += 2;
+        } else {
+            result.push(bytes[i]);
+            i += 1;
+        }
+    }
+    (result, "")
 }
 
 /// Pull a run of ASCII digits off the front of `s`. Returns the
@@ -220,7 +263,36 @@ fn resolve_one(addr: &Address, buf: &Buffer) -> Result<usize, String> {
                 Ok(result as usize)
             }
         }
+        Address::Search { pattern, forward } => search(pattern, *forward, buf),
     }
+}
+
+/// Scan for the next line matching `pattern`, starting just past the
+/// current line and wrapping at the buffer ends. Matches ed: on an
+/// empty buffer, or if no line (including the current one, checked
+/// last on wraparound) matches, this errors.
+fn search(pattern: &[u8], forward: bool, buf: &Buffer) -> Result<usize, String> {
+    if buf.is_empty() {
+        return Err("invalid address".to_string());
+    }
+    let re = bre::Regex::compile(pattern);
+    let len = buf.len();
+    let mut n = buf.current();
+    for _ in 0..len {
+        n = if forward {
+            if n >= len { 1 } else { n + 1 }
+        } else if n <= 1 {
+            len
+        } else {
+            n - 1
+        };
+        if let Some(line) = buf.line(n)
+            && re.find(line.as_bytes()).is_some()
+        {
+            return Ok(n);
+        }
+    }
+    Err("no match".to_string())
 }
 
 fn clone_addr(a: &Address) -> Address {
@@ -229,5 +301,9 @@ fn clone_addr(a: &Address) -> Address {
         Address::Current => Address::Current,
         Address::Last => Address::Last,
         Address::Offset(n) => Address::Offset(*n),
+        Address::Search { pattern, forward } => Address::Search {
+            pattern: pattern.clone(),
+            forward: *forward,
+        },
     }
 }

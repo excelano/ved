@@ -137,6 +137,10 @@ Addresses specify which lines a command operates on. Most commands default to th
 | `,` | All lines (shorthand for `1,$`) |
 | `;` | Current line to end (shorthand for `.,$`) |
 | `2,7` | Lines 2 through 7 |
+| `/re/` | Next line matching `re`, searching forward (wraps at the end) |
+| `?re?` | Next line matching `re`, searching backward (wraps at the start) |
+
+A search address's closing delimiter can be omitted if the pattern runs to the end of the line, matching ed: `/re` alone (no command letter after it) searches and prints, the same as `5` alone jumps to line 5 and prints it. Compound offsets like `$-5` or `5-3` are not supported — write them as two commands (`$`, then `-5`) instead.
 
 ## Regular expressions
 

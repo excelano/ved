@@ -1297,6 +1297,87 @@ mod tests {
         assert_eq!(buf.line(1), Some("café"));
     }
 
+    // ── search addresses: /pattern/ and ?pattern? ─────────────
+    // (issue #7)
+
+    #[test]
+    fn forward_search_finds_next_matching_line() {
+        let mut buf = buf_with(&["alpha", "beta", "gamma"]);
+        buf.set_current(1);
+        let act = dispatch("/beta/p", &mut buf);
+        assert!(matches!(act, Action::Print(ref s) if s == "beta"));
+        assert_eq!(buf.current(), 2);
+    }
+
+    #[test]
+    fn backward_search_wraps_past_the_top() {
+        let mut buf = buf_with(&["alpha", "beta", "gamma"]);
+        buf.set_current(1);
+        let act = dispatch("?gamma?p", &mut buf);
+        assert!(matches!(act, Action::Print(ref s) if s == "gamma"));
+        assert_eq!(buf.current(), 3);
+    }
+
+    #[test]
+    fn forward_search_wraps_past_the_bottom() {
+        let mut buf = buf_with(&["alpha", "beta", "gamma"]);
+        buf.set_current(3);
+        let act = dispatch("/alpha/p", &mut buf);
+        assert!(matches!(act, Action::Print(ref s) if s == "alpha"));
+        assert_eq!(buf.current(), 1);
+    }
+
+    #[test]
+    fn search_can_match_current_line_on_full_wraparound() {
+        // Only the current line matches, so the search has to go all
+        // the way around the buffer and back to it.
+        let mut buf = buf_with(&["alpha", "beta"]);
+        buf.set_current(1);
+        let act = dispatch("/alpha/p", &mut buf);
+        assert!(matches!(act, Action::Print(ref s) if s == "alpha"));
+    }
+
+    #[test]
+    fn search_with_no_match_errors() {
+        let mut buf = buf_with(&["alpha", "beta"]);
+        buf.set_current(1);
+        let act = dispatch("/nope/p", &mut buf);
+        assert!(matches!(act, Action::Error(_)));
+    }
+
+    #[test]
+    fn search_address_with_no_command_letter_prints() {
+        // A bare address with nothing after it defaults to "go there
+        // and print", same as any other address form.
+        let mut buf = buf_with(&["alpha", "beta"]);
+        buf.set_current(1);
+        let act = dispatch("/beta", &mut buf);
+        assert!(matches!(act, Action::Print(ref s) if s == "beta"));
+    }
+
+    #[test]
+    fn search_pattern_can_escape_its_own_delimiter() {
+        let mut buf = buf_with(&["foo/bar", "baz"]);
+        buf.set_current(1);
+        let act = dispatch("/foo\\/bar/p", &mut buf);
+        assert!(matches!(act, Action::Print(ref s) if s == "foo/bar"));
+    }
+
+    #[test]
+    fn search_address_works_as_a_range_endpoint() {
+        let mut buf = buf_with(&["one", "two", "three", "four"]);
+        buf.set_current(1);
+        let act = dispatch("/two/,/four/p", &mut buf);
+        assert!(matches!(act, Action::Print(_)));
+    }
+
+    #[test]
+    fn search_on_empty_buffer_errors_not_panics() {
+        let mut buf = Buffer::new();
+        let act = dispatch("/x/p", &mut buf);
+        assert!(matches!(act, Action::Error(_)));
+    }
+
     #[test]
     fn substitute_partial_char_match_errors_without_writing() {
         let mut buf = buf_with(&["café"]);
