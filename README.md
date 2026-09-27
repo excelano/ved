@@ -207,4 +207,4 @@ Two limitations are inherited from ed and intentional, since changing them would
 
 MIT. See [LICENSE](LICENSE).
 
-Author: David M. Anderson. Built with the assistance of Claude (Anthropic).
+Author: David M. Anderson.
