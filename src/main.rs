@@ -1038,6 +1038,141 @@ mod tests {
         assert!(buf.filename().is_none());
     }
 
+    // ── w (write) command ─────────────────────────────────────
+
+    #[test]
+    fn write_command_writes_buffer_and_remembers_filename() {
+        let path = temp_path("write_explicit");
+        let mut buf = buf_with(&["foo", "bar"]);
+        let act = dispatch(&format!("w {}", path.to_str().unwrap()), &mut buf);
+        assert!(matches!(act, Action::Print(ref s) if s.contains("wrote")));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "foo\nbar\n",
+            "written content"
+        );
+        assert_eq!(buf.filename(), path.to_str());
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn bare_write_reuses_remembered_filename() {
+        let path = temp_path("write_bare");
+        let mut buf = buf_with(&["only"]);
+        let _ = dispatch(&format!("w {}", path.to_str().unwrap()), &mut buf);
+        buf.replace_line(1, "changed".to_string());
+        let act = dispatch("w", &mut buf);
+        assert!(matches!(act, Action::Print(_)));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "changed\n");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn write_with_no_filename_and_none_remembered_errors() {
+        let mut buf = buf_with(&["x"]);
+        let act = dispatch("w", &mut buf);
+        assert!(matches!(act, Action::Error(_)));
+    }
+
+    #[test]
+    fn write_refuses_to_overwrite_a_non_utf8_source() {
+        let path = temp_path("write_non_utf8");
+        let mut buf = buf_with(&["x"]);
+        buf.set_filename(path.to_str().unwrap().to_string());
+        buf.mark_non_utf8_source("UTF-16".to_string(), path.to_str().unwrap().to_string());
+        let act = dispatch("w", &mut buf);
+        assert!(matches!(act, Action::Error(ref e) if e.contains("UTF-16")));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn write_of_a_partial_range_does_not_mark_the_buffer_saved() {
+        // A fresh buffer starts modified (append_after sets it).
+        // Writing only line 1 leaves the rest of the buffer
+        // unsaved, so that flag must survive the write — only a
+        // whole-buffer write is allowed to clear it.
+        let path = temp_path("write_partial");
+        let mut buf = buf_with(&["a", "b", "c"]);
+        assert!(buf.is_modified());
+        let _ = dispatch(&format!("1w {}", path.to_str().unwrap()), &mut buf);
+        assert!(buf.is_modified());
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn write_of_the_whole_buffer_marks_it_saved() {
+        let path = temp_path("write_whole");
+        let mut buf = buf_with(&["a", "b", "c"]);
+        assert!(buf.is_modified());
+        let _ = dispatch(&format!("w {}", path.to_str().unwrap()), &mut buf);
+        assert!(!buf.is_modified());
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    // ── r (read) command ──────────────────────────────────────
+
+    #[test]
+    fn read_command_inserts_file_contents_after_the_address() {
+        let path = temp_path("read_insert");
+        std::fs::write(&path, "x\ny\n").unwrap();
+        let mut buf = buf_with(&["foo", "bar"]);
+        let act = dispatch(&format!("1r {}", path.to_str().unwrap()), &mut buf);
+        assert!(matches!(act, Action::Print(_)));
+        assert_eq!(buf.line(1), Some("foo"));
+        assert_eq!(buf.line(2), Some("x"));
+        assert_eq!(buf.line(3), Some("y"));
+        assert_eq!(buf.line(4), Some("bar"));
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn read_with_no_filename_and_none_remembered_errors() {
+        let mut buf = buf_with(&["x"]);
+        let act = dispatch("r", &mut buf);
+        assert!(matches!(act, Action::Error(_)));
+    }
+
+    #[test]
+    fn read_of_a_missing_file_errors() {
+        let path = temp_path("read_missing");
+        let mut buf = buf_with(&["x"]);
+        let act = dispatch(&format!("r {}", path.to_str().unwrap()), &mut buf);
+        assert!(matches!(act, Action::Error(_)));
+    }
+
+    // ── e (edit) command ──────────────────────────────────────
+
+    #[test]
+    fn edit_command_replaces_the_buffer_with_file_contents() {
+        let path = temp_path("edit_replace");
+        std::fs::write(&path, "new1\nnew2\n").unwrap();
+        let mut buf = buf_with(&["old1", "old2", "old3"]);
+        let act = dispatch(&format!("e {}", path.to_str().unwrap()), &mut buf);
+        assert!(matches!(act, Action::Print(_)));
+        assert_eq!(buf.len(), 2);
+        assert_eq!(buf.line(1), Some("new1"));
+        assert_eq!(buf.line(2), Some("new2"));
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn edit_with_no_filename_and_none_remembered_errors() {
+        let mut buf = buf_with(&["x"]);
+        let act = dispatch("e", &mut buf);
+        assert!(matches!(act, Action::Error(_)));
+        // A failed edit must not touch the buffer.
+        assert_eq!(buf.line(1), Some("x"));
+    }
+
+    #[test]
+    fn edit_of_a_missing_file_wipes_the_buffer_as_a_new_file() {
+        let path = temp_path("edit_missing");
+        let mut buf = buf_with(&["old1"]);
+        let act = dispatch(&format!("e {}", path.to_str().unwrap()), &mut buf);
+        assert!(matches!(act, Action::Print(ref s) if s.contains("new file")));
+        assert!(buf.is_empty());
+    }
+
     // ── render_list_line (l command) ─────────────────────────
 
     #[test]
@@ -1161,6 +1296,88 @@ mod tests {
         assert!(buf.is_modified());
     }
 
+    // ── d (delete) command ────────────────────────────────────
+
+    #[test]
+    fn delete_single_line_reports_singular_message() {
+        let mut buf = buf_with(&["a", "b", "c"]);
+        let act = dispatch("2d", &mut buf);
+        assert!(matches!(act, Action::Print(ref s) if s == "deleted line 2"));
+        assert_eq!(buf.len(), 2);
+        assert_eq!(buf.line(1), Some("a"));
+        assert_eq!(buf.line(2), Some("c"));
+    }
+
+    #[test]
+    fn delete_range_reports_count_and_bounds() {
+        let mut buf = buf_with(&["a", "b", "c", "d"]);
+        let act = dispatch("2,3d", &mut buf);
+        assert!(matches!(act, Action::Print(ref s) if s == "deleted 2 lines (2-3)"));
+        assert_eq!(buf.len(), 2);
+    }
+
+    #[test]
+    fn delete_long_form_alias_works() {
+        let mut buf = buf_with(&["a", "b"]);
+        let _ = dispatch("1delete", &mut buf);
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf.line(1), Some("b"));
+    }
+
+    // ── g/v (global / inverse global) command ──────────────────
+
+    #[test]
+    fn global_runs_print_on_every_matching_line() {
+        let mut buf = buf_with(&["foo", "bar", "foo2"]);
+        let act = dispatch("g/foo/p", &mut buf);
+        assert!(matches!(act, Action::Print(ref s) if s == "foo\nfoo2"));
+    }
+
+    #[test]
+    fn global_defaults_to_print_when_no_command_is_given() {
+        let mut buf = buf_with(&["foo", "bar"]);
+        let act = dispatch("g/foo/", &mut buf);
+        assert!(matches!(act, Action::Print(ref s) if s == "foo"));
+    }
+
+    #[test]
+    fn inverse_global_v_runs_on_lines_that_do_not_match() {
+        let mut buf = buf_with(&["foo", "bar", "foo2"]);
+        let act = dispatch("v/foo/p", &mut buf);
+        assert!(matches!(act, Action::Print(ref s) if s == "bar"));
+    }
+
+    #[test]
+    fn global_delete_removes_matching_lines() {
+        let mut buf = buf_with(&["foo", "bar", "foo2", "baz"]);
+        let act = dispatch("g/foo/d", &mut buf);
+        assert!(matches!(act, Action::Done));
+        assert_eq!(buf.len(), 2);
+        assert_eq!(buf.line(1), Some("bar"));
+        assert_eq!(buf.line(2), Some("baz"));
+    }
+
+    #[test]
+    fn global_with_no_matches_errors() {
+        let mut buf = buf_with(&["x", "y"]);
+        let act = dispatch("g/zzz/p", &mut buf);
+        assert!(matches!(act, Action::Error(_)));
+    }
+
+    #[test]
+    fn global_with_no_delimiter_errors() {
+        let mut buf = buf_with(&["x"]);
+        let act = dispatch("g", &mut buf);
+        assert!(matches!(act, Action::Error(_)));
+    }
+
+    #[test]
+    fn global_unterminated_pattern_errors() {
+        let mut buf = buf_with(&["x"]);
+        let act = dispatch("g/unterminated", &mut buf);
+        assert!(matches!(act, Action::Error(_)));
+    }
+
     // ── H (help) command ──────────────────────────────────────
 
     #[test]
@@ -1175,6 +1392,53 @@ mod tests {
         let mut buf = buf_with(&["a"]);
         let act = dispatch("help", &mut buf);
         assert!(matches!(act, Action::Print(_)));
+    }
+
+    // ── a/i/c (append/insert/change) pre-input-mode state ──────
+    // These hand off to Action::EnterInputMode, so the actual text
+    // entry isn't unit-testable here; what dispatch itself is
+    // responsible for is positioning `current` correctly before
+    // that handoff, which is what these check.
+
+    #[test]
+    fn append_positions_current_at_the_addressed_line() {
+        let mut buf = buf_with(&["x", "y"]);
+        let act = dispatch("1a", &mut buf);
+        assert!(matches!(act, Action::EnterInputMode));
+        assert_eq!(buf.current(), 1);
+    }
+
+    #[test]
+    fn insert_positions_current_before_the_addressed_line() {
+        let mut buf = buf_with(&["x", "y"]);
+        let act = dispatch("2i", &mut buf);
+        assert!(matches!(act, Action::EnterInputMode));
+        assert_eq!(buf.current(), 1);
+    }
+
+    #[test]
+    fn insert_at_line_one_positions_current_at_the_sentinel() {
+        let mut buf = buf_with(&["x", "y"]);
+        let _ = dispatch("1i", &mut buf);
+        assert_eq!(buf.current(), 0);
+    }
+
+    #[test]
+    fn change_deletes_the_range_and_positions_before_it() {
+        let mut buf = buf_with(&["a", "b", "c"]);
+        let act = dispatch("1,2c", &mut buf);
+        assert!(matches!(act, Action::EnterInputMode));
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf.line(1), Some("c"));
+        assert_eq!(buf.current(), 0);
+    }
+
+    // ── Q (force quit) command ─────────────────────────────────
+
+    #[test]
+    fn force_quit_returns_force_quit_regardless_of_modified_state() {
+        let mut buf = buf_with(&["x"]);
+        assert!(matches!(dispatch("Q", &mut buf), Action::ForceQuit));
     }
 
     // ── m (move) command ─────────────────────────────────────
