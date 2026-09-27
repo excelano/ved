@@ -206,5 +206,3 @@ Two limitations are inherited from ed and intentional, since changing them would
 ## License
 
 MIT. See [LICENSE](LICENSE).
-
-Author: David M. Anderson.
