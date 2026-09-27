@@ -28,13 +28,55 @@
 // Author: David M. Anderson
 // Built with AI assistance (Claude, Anthropic)
 
-/// One matchable thing: a literal byte, any-byte wildcard, or
+/// One matchable thing: a literal byte, any-character wildcard, or
 /// a bracket character class.
+///
+/// `Literal` matches exactly one byte — correct for both ASCII and
+/// multi-byte UTF-8, since a multi-byte pattern character compiles
+/// to one `Literal` per byte, consumed in lockstep with the matching
+/// bytes in the text. `Dot` and `Class` are the two atoms that used
+/// to assume one byte was one character; they now consume a whole
+/// UTF-8 sequence (see `atom_width`).
 #[derive(Debug)]
 enum Atom {
     Literal(u8),
     Dot,
-    Class { negated: bool, chars: Vec<u8> },
+    Class {
+        negated: bool,
+        members: Vec<Vec<u8>>,
+    },
+}
+
+/// The number of bytes in the UTF-8 sequence led by `byte`. Falls
+/// back to 1 for a continuation byte or any other value that isn't a
+/// valid lead byte. Text from a buffer line is always valid UTF-8
+/// and every caller here only ever asks this of a byte that's
+/// already at a character boundary, so the fallback is defensive
+/// rather than a case that's expected to fire.
+fn utf8_len(byte: u8) -> usize {
+    match byte {
+        0x00..=0x7F => 1,
+        0xC0..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF7 => 4,
+        _ => 1,
+    }
+}
+
+/// The byte-width of the character at the front of `text`, or 0 if
+/// `text` is empty. Exposed for callers outside this module that
+/// need to step over one whole character in text they already know
+/// is valid UTF-8 — `run_substitute`'s global substitute has to
+/// advance this way over a zero-width match (from a pattern like
+/// `x*` or `.*` that can match nothing), and stepping a raw byte
+/// there would reopen the same character-splitting bug this module
+/// closes internally.
+pub fn char_width(text: &[u8]) -> usize {
+    if text.is_empty() {
+        0
+    } else {
+        utf8_len(text[0]).min(text.len())
+    }
 }
 
 /// One element of a compiled pattern.
@@ -203,6 +245,16 @@ impl Regex {
 
     /// Search for this pattern anywhere in `text`. Returns the
     /// position of the first match, or None.
+    ///
+    /// The search only tries starting offsets on a UTF-8 character
+    /// boundary. `.` and bracket atoms are width-aware once a match
+    /// attempt is under way, but that alone isn't enough: a failed
+    /// attempt starting at a real character boundary can still fail
+    /// deep enough into the pattern that, without this, the next
+    /// byte tried would land mid-character — and Dot's fallback for
+    /// a non-lead byte (see `utf8_len`) would then happily accept
+    /// it, returning a match that starts or ends mid-character after
+    /// all. Skipping straight to the next boundary closes that.
     pub fn find(&self, text: &[u8]) -> Option<Match> {
         let elements = &self.elements;
         let anchored = !elements.is_empty() && matches!(elements[0], Element::Caret);
@@ -221,7 +273,7 @@ impl Regex {
             if anchored || offset >= text.len() {
                 return None;
             }
-            offset += 1;
+            offset += utf8_len(text[offset]).min(text.len() - offset);
         }
     }
 
@@ -284,21 +336,23 @@ impl Regex {
             Element::Star(atom) => {
                 self.match_star(atom, &elements[1..], text, pos, caps, full_text)
             }
-            Element::One(atom) => {
-                if !text.is_empty() && atom_matches(atom, text[0]) {
-                    self.match_here(&elements[1..], &text[1..], pos + 1, caps, full_text)
-                        .map(|(len, caps)| (len + 1, caps))
-                } else {
-                    None
-                }
-            }
+            Element::One(atom) => match atom_width(atom, text) {
+                Some(w) => self
+                    .match_here(&elements[1..], &text[w..], pos + w, caps, full_text)
+                    .map(|(len, caps)| (len + w, caps)),
+                None => None,
+            },
         }
     }
 
     /// POSIX BRE leftmost-longest semantics: consume as many
-    /// `atom` matches as possible, then back off one at a time
-    /// until the remaining elements match. Returns total bytes
-    /// consumed and captures on success.
+    /// `atom` matches (repetitions) as possible, then back off one
+    /// repetition at a time until the remaining elements match.
+    /// Backing off by a whole repetition rather than a byte matters
+    /// once `atom` can be more than one byte wide (`.` or a bracket
+    /// expression over a multi-byte character) — dropping a single
+    /// byte would leave the next attempt starting mid-character.
+    /// Returns total bytes consumed and captures on success.
     fn match_star(
         &self,
         atom: &Atom,
@@ -308,21 +362,21 @@ impl Regex {
         caps: Caps,
         full_text: &[u8],
     ) -> Option<(usize, Caps)> {
-        let mut max = 0;
-        while max < text.len() && atom_matches(atom, text[max]) {
-            max += 1;
+        // offsets[k] = bytes consumed by k repetitions of `atom`.
+        let mut offsets = vec![0];
+        let mut total = 0;
+        while let Some(w) = atom_width(atom, &text[total..]) {
+            total += w;
+            offsets.push(total);
         }
-        loop {
+        for &max in offsets.iter().rev() {
             if let Some((len, caps)) =
                 self.match_here(elements, &text[max..], pos + max, caps, full_text)
             {
                 return Some((max + len, caps));
             }
-            if max == 0 {
-                return None;
-            }
-            max -= 1;
         }
+        None
     }
 }
 
@@ -337,14 +391,22 @@ fn parse_atom(pattern: &[u8], i: usize) -> (Atom, usize) {
 }
 
 /// Parse a bracket expression starting at the `[` at position
-/// `start`. Returns a Class atom with the fully expanded
-/// character list and the index just past the closing `]`.
+/// `start`. Returns a Class atom with the fully expanded member
+/// list and the index just past the closing `]`.
 ///
 /// Follows POSIX BRE bracket rules:
 ///   - `]` as the first character (after optional `^`) is literal
 ///   - `-` at the start or end is literal, not a range
 ///   - `a-z` in the middle is a range, expanded inline
 ///   - `[^...]` negates the class
+///
+/// A member can be a multi-byte UTF-8 character (`[é]`), taken
+/// verbatim from the pattern bytes. A `lo-hi` range only expands
+/// when both endpoints are single-byte, since a byte-value range
+/// over multi-byte characters (`[à-ÿ]`) is a locale-collation
+/// question this engine doesn't take on; a multi-byte endpoint falls
+/// through to being parsed as its own literal member instead, with
+/// the `-` as another literal member.
 fn parse_bracket(pattern: &[u8], start: usize) -> (Atom, usize) {
     let mut i = start + 1; // skip '['
 
@@ -355,27 +417,33 @@ fn parse_bracket(pattern: &[u8], start: usize) -> (Atom, usize) {
         false
     };
 
-    let mut chars = Vec::new();
+    let mut members: Vec<Vec<u8>> = Vec::new();
 
     // ] as the very first character (after optional ^) is literal.
     if i < pattern.len() && pattern[i] == b']' {
-        chars.push(b']');
+        members.push(vec![b']']);
         i += 1;
     }
 
     while i < pattern.len() && pattern[i] != b']' {
-        // Range: lo-hi, but only when - is followed by a char
-        // that isn't the closing ].
-        if i + 2 < pattern.len() && pattern[i + 1] == b'-' && pattern[i + 2] != b']' {
+        // Range: lo-hi, but only when - is followed by a char that
+        // isn't the closing ] and both endpoints are single-byte.
+        if utf8_len(pattern[i]) == 1
+            && i + 2 < pattern.len()
+            && pattern[i + 1] == b'-'
+            && pattern[i + 2] != b']'
+            && utf8_len(pattern[i + 2]) == 1
+        {
             let lo = pattern[i];
             let hi = pattern[i + 2];
             for c in lo..=hi {
-                chars.push(c);
+                members.push(vec![c]);
             }
             i += 3;
         } else {
-            chars.push(pattern[i]);
-            i += 1;
+            let w = utf8_len(pattern[i]).min(pattern.len() - i);
+            members.push(pattern[i..i + w].to_vec());
+            i += w;
         }
     }
 
@@ -384,17 +452,35 @@ fn parse_bracket(pattern: &[u8], start: usize) -> (Atom, usize) {
         i += 1;
     }
 
-    (Atom::Class { negated, chars }, i)
+    (Atom::Class { negated, members }, i)
 }
 
-/// Does this atom match this byte?
-fn atom_matches(atom: &Atom, byte: u8) -> bool {
+/// Does `atom` match at the front of `text`? Returns the number of
+/// bytes consumed on a match, or `None`.
+///
+/// `Literal` matches its one byte exactly, unchanged from before.
+/// `Dot` consumes one whole character. `Class` consumes exactly the
+/// matched member's byte length when a member matches; when none
+/// does (the case that fires for a negated class), it consumes one
+/// whole character, same as `Dot` — "not in this class" means "any
+/// other character," not "any other byte."
+fn atom_width(atom: &Atom, text: &[u8]) -> Option<usize> {
+    if text.is_empty() {
+        return None;
+    }
     match atom {
-        Atom::Literal(c) => byte == *c,
-        Atom::Dot => true,
-        Atom::Class { negated, chars } => {
-            let found = chars.contains(&byte);
-            if *negated { !found } else { found }
+        Atom::Literal(c) => (text[0] == *c).then_some(1),
+        Atom::Dot => Some(utf8_len(text[0]).min(text.len())),
+        Atom::Class { negated, members } => {
+            let matched = members
+                .iter()
+                .find(|m| text.len() >= m.len() && &text[..m.len()] == m.as_slice())
+                .map(Vec::len);
+            match (*negated, matched) {
+                (false, found) => found,
+                (true, Some(_)) => None,
+                (true, None) => Some(utf8_len(text[0]).min(text.len())),
+            }
         }
     }
 }
@@ -518,6 +604,73 @@ mod tests {
     #[test]
     fn dot_requires_a_character() {
         assert!(!has_match(b"a.c", b"ac"));
+    }
+
+    // Dot over multi-byte UTF-8 characters (issue #13)
+
+    #[test]
+    fn dot_matches_whole_multibyte_character() {
+        // "café" is c,a,f,é — the pattern has four atoms, one per
+        // character, so it needs "." to consume all of é's two
+        // bytes as a single unit, not just the first.
+        assert!(has_match(b"caf.", b"caf\xc3\xa9")); // café
+        let m = Regex::compile(b"caf.").find(b"caf\xc3\xa9").unwrap();
+        assert_eq!(m.end - m.start, 5); // 3 ASCII bytes + 2-byte é
+    }
+
+    #[test]
+    fn four_dots_span_cafe_but_five_do_not() {
+        // "café" (c,a,f,é) is 4 characters / 5 bytes. Four "."
+        // atoms should span it exactly; a byte-oriented engine
+        // would also accept five, since it has 5 bytes — this is
+        // the compatibility gap issue #13 closes.
+        assert!(has_match(b"^....$", b"caf\xc3\xa9"));
+        assert!(!has_match(b"^.....$", b"caf\xc3\xa9"));
+    }
+
+    #[test]
+    fn dot_global_style_repetition_over_cafe_yields_four_matches() {
+        // Reproduces the ed compatibility check from issue #10: "."
+        // must find four matches in café (four characters), not five
+        // (its byte count).
+        let re = Regex::compile(b".");
+        let text = "café".as_bytes();
+        let mut pos = 0;
+        let mut count = 0;
+        while let Some(m) = re.find(&text[pos..]) {
+            count += 1;
+            pos += m.end.max(1);
+        }
+        assert_eq!(count, 4);
+    }
+
+    // find()'s search offset stays on character boundaries
+    // (issue #13: a failed match attempt at a real boundary must not
+    // fall through to trying the bytes *inside* that character as
+    // their own starting offsets — Dot's byte-width fallback would
+    // then accept one, reopening the same character-splitting bug
+    // one level up, in the search loop rather than in a single atom.)
+
+    #[test]
+    fn failed_match_at_a_character_does_not_search_inside_it() {
+        // "€" is 3 bytes (\xe2\x82\xac). "(..)y" can't match starting
+        // at "€" (dot,dot lands on 'y' itself, leaving nothing for
+        // the literal 'y' to match) — and it must not then be
+        // offered the two bytes inside "€" as fallback starting
+        // points either.
+        let text = "\u{20ac}yq"; // "€yq"
+        assert!(!has_match(b"\\(..\\)y", text.as_bytes()));
+    }
+
+    #[test]
+    fn search_skips_a_whole_failed_character_in_one_hop() {
+        // Same shape as above, but with a real match further along:
+        // the search has to jump clean over "€" to the next
+        // character boundary, not step through its bytes one at a
+        // time on the way there.
+        let text = "\u{20ac}zzy"; // "€zzy"
+        let m = Regex::compile(b"..y").find(text.as_bytes()).unwrap();
+        assert_eq!((m.start, m.end), (3, 6)); // "zzy", after the 3-byte €
     }
 
     // Star repetition
@@ -674,6 +827,41 @@ mod tests {
     #[test]
     fn literal_dash_at_start() {
         assert!(has_match(b"[-abc]", b"-"));
+    }
+
+    // Multi-byte UTF-8 members in a bracket expression (issue #13)
+
+    #[test]
+    fn class_matches_multibyte_member() {
+        assert!(has_match("[é]".as_bytes(), "café".as_bytes()));
+    }
+
+    #[test]
+    fn class_member_match_is_whole_sequence_not_shared_lead_byte() {
+        // é (\xc3\xa9) and È (\xc3\x88) share a lead byte but are
+        // different characters; a member match has to compare the
+        // full sequence, not just that shared first byte.
+        assert!(!has_match("[é]".as_bytes(), "È".as_bytes()));
+    }
+
+    #[test]
+    fn negated_class_over_multibyte_text_consumes_whole_character() {
+        // [^x] on café's é must reject by skipping the *whole*
+        // 2-byte character, not the "not x" single byte \xc3 with
+        // \xa9 left dangling for the next atom to trip over.
+        let m = Regex::compile(b"[^x]").find("é".as_bytes()).unwrap();
+        assert_eq!((m.start, m.end), (0, 2));
+    }
+
+    #[test]
+    fn range_endpoint_that_is_multibyte_falls_back_to_literal_members() {
+        // "é-z" can't be a byte-value range (é isn't one byte), so
+        // é, -, and z are each their own literal member instead of
+        // silently doing something byte-value-nonsensical.
+        assert!(has_match("[é-z]".as_bytes(), "é".as_bytes()));
+        assert!(has_match(b"[\xc3\xa9-z]", b"-"));
+        assert!(has_match("[é-z]".as_bytes(), b"z"));
+        assert!(!has_match("[é-z]".as_bytes(), b"m"));
     }
 
     // Bracket + star

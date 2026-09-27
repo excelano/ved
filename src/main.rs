@@ -764,20 +764,13 @@ fn run_substitute(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
             substitute_first(&re, line_bytes, &replacement)
         };
 
-        let new_line = match new_line {
-            Ok(nl) => nl,
-            Err(e) => return Action::Error(e),
-        };
-
         if let Some(new_bytes) = new_line {
-            let new_str = match String::from_utf8(new_bytes) {
-                Ok(s) => s,
-                Err(_) => {
-                    return Action::Error(format!(
-                        "line {n}: replacement produces invalid UTF-8 (check \\0NN escapes)"
-                    ));
-                }
-            };
+            // Always valid UTF-8: `line_bytes` and `replacement` are
+            // both valid UTF-8 (they come from `str`), the BRE
+            // engine's `.` and bracket atoms consume whole
+            // characters, and every match/group/octal-escape byte
+            // range therefore lands on a character boundary.
+            let new_str = String::from_utf8(new_bytes).expect("substitution result is valid UTF-8");
             buf.replace_line(n, new_str);
             last_modified_line = Some(n);
         }
@@ -825,49 +818,19 @@ fn scan_delimited(input: &[u8], delim: u8) -> Option<(Vec<u8>, &[u8])> {
     None // no closing delimiter found
 }
 
-/// True if `idx` falls on a UTF-8 character boundary in `text`.
-/// `text` is assumed to be valid UTF-8 (it comes from a buffer
-/// line), so checking that the byte at `idx` is not a UTF-8
-/// continuation byte (`10xxxxxx`) is sufficient.
-fn is_char_boundary(text: &[u8], idx: usize) -> bool {
-    idx == 0 || idx == text.len() || (text[idx] & 0xC0) != 0x80
-}
-
-/// Replace the first match in `text`. Returns `Ok(None)` if no
-/// match. Errors if the match starts or ends inside a multi-byte
-/// UTF-8 character, rather than silently corrupting the text: the
-/// engine matches bytes, and `.` or a bracket expression can
-/// consume part of a character (see issue #10).
-fn substitute_first(
-    re: &bre::Regex,
-    text: &[u8],
-    replacement: &[u8],
-) -> Result<Option<Vec<u8>>, String> {
-    let m = match re.find(text) {
-        Some(m) => m,
-        None => return Ok(None),
-    };
-    if !is_char_boundary(text, m.start) || !is_char_boundary(text, m.end) {
-        return Err(format!(
-            "match at byte {} splits a UTF-8 character; refusing to substitute",
-            m.start
-        ));
-    }
+/// Replace the first match in `text`. Returns None if no match.
+fn substitute_first(re: &bre::Regex, text: &[u8], replacement: &[u8]) -> Option<Vec<u8>> {
+    let m = re.find(text)?;
     let mut result = Vec::new();
     result.extend_from_slice(&text[..m.start]);
     result.extend_from_slice(&bre::expand_replacement(replacement, &m, text));
     result.extend_from_slice(&text[m.end..]);
-    Ok(Some(result))
+    Some(result)
 }
 
-/// Replace all non-overlapping matches in `text`. Returns
-/// `Ok(None)` if no match was found at all. Errors under the same
-/// character-boundary rule as `substitute_first`.
-fn substitute_all(
-    re: &bre::Regex,
-    text: &[u8],
-    replacement: &[u8],
-) -> Result<Option<Vec<u8>>, String> {
+/// Replace all non-overlapping matches in `text`. Returns None
+/// if no match was found at all.
+fn substitute_all(re: &bre::Regex, text: &[u8], replacement: &[u8]) -> Option<Vec<u8>> {
     let mut result = Vec::new();
     let mut pos = 0;
     let mut matched = false;
@@ -878,23 +841,20 @@ fn substitute_all(
                 matched = true;
                 let abs_start = pos + m.start;
                 let abs_end = pos + m.end;
-                if !is_char_boundary(text, abs_start) || !is_char_boundary(text, abs_end) {
-                    return Err(format!(
-                        "match at byte {abs_start} splits a UTF-8 character; refusing to substitute"
-                    ));
-                }
                 result.extend_from_slice(&text[pos..abs_start]);
                 // For expand_replacement, the Match positions are
                 // relative to the slice we searched, but we need
                 // them relative to that same slice for text lookup.
                 result.extend_from_slice(&bre::expand_replacement(replacement, &m, &text[pos..]));
-                // Advance past the match. If the match was empty,
-                // advance by one byte to avoid an infinite loop.
+                // Advance past the match. If the match was empty (a
+                // pattern like `x*` or `.*` can match nothing), step
+                // one whole character to avoid an infinite loop —
+                // one raw byte would risk splitting a multi-byte
+                // character right where matching resumes.
                 if abs_end == abs_start {
-                    if pos < text.len() {
-                        result.push(text[pos]);
-                    }
-                    pos = abs_start + 1;
+                    let w = bre::char_width(&text[abs_start..]);
+                    result.extend_from_slice(&text[abs_start..abs_start + w]);
+                    pos = abs_start + w.max(1);
                 } else {
                     pos = abs_end;
                 }
@@ -906,7 +866,7 @@ fn substitute_all(
         }
     }
 
-    if matched { Ok(Some(result)) } else { Ok(None) }
+    if matched { Some(result) } else { None }
 }
 
 /// Write the addressed range to a file. Empty spec defaults to the
@@ -1283,18 +1243,46 @@ mod tests {
         assert_eq!(buf.line(1), Some("YYY YYY YYY"));
     }
 
-    // ── substitute refuses to split a multi-byte character ────
-    // (issue #10: the BRE engine matches bytes, so `.` and bracket
-    // expressions can consume part of a UTF-8 character; a partial
-    // match must error, not silently corrupt the line.)
+    // ── substitute over multi-byte UTF-8 characters ────────────
+    // (issue #13: `.` and bracket expressions in bre.rs now consume
+    // a whole UTF-8 character, matching GNU ed's counts, closing the
+    // gap #10 had worked around with a boundary check.)
 
     #[test]
-    fn substitute_dot_global_on_multibyte_line_errors() {
+    fn substitute_dot_global_on_multibyte_line_matches_by_character() {
         let mut buf = buf_with(&["café"]);
         let act = dispatch("s/./Y/g", &mut buf);
+        assert!(!matches!(act, Action::Error(_)));
+        // Four characters, not café's five bytes.
+        assert_eq!(buf.line(1), Some("YYYY"));
+    }
+
+    #[test]
+    fn substitute_does_not_panic_when_search_would_slide_into_a_character() {
+        // A failed match attempt starting exactly on a multi-byte
+        // character must not fall through to the search trying the
+        // bytes inside it as further starting offsets: that used to
+        // panic run_substitute's UTF-8 rebuild (a real bug caught
+        // while closing out issue #13, distinct from the atom-width
+        // fix itself — the failure lived in bre::Regex::find's
+        // search loop).
+        let mut buf = buf_with(&["\u{20ac}yq"]); // "€yq"
+        let act = dispatch("s/\\(..\\)y/[\\1]/", &mut buf);
         assert!(matches!(act, Action::Error(_)));
-        // The line is left untouched.
-        assert_eq!(buf.line(1), Some("café"));
+        assert_eq!(buf.line(1), Some("\u{20ac}yq"));
+    }
+
+    #[test]
+    fn global_substitute_with_star_that_can_match_empty_preserves_characters() {
+        // `[a-z]*` matches zero-width at é (not a-z), and the old
+        // empty-match stepping in substitute_all advanced by one raw
+        // byte to avoid looping forever — splitting é in half and
+        // panicking on the UTF-8 rebuild. It has to step by one
+        // whole character instead.
+        let mut buf = buf_with(&["café"]);
+        let act = dispatch("s/[a-z]*/X/g", &mut buf);
+        assert!(!matches!(act, Action::Error(_)));
+        assert_eq!(buf.line(1), Some("XXéX"));
     }
 
     // ── search addresses: /pattern/ and ?pattern? ─────────────
@@ -1379,11 +1367,13 @@ mod tests {
     }
 
     #[test]
-    fn substitute_partial_char_match_errors_without_writing() {
+    fn dot_after_literal_consumes_the_whole_next_character() {
+        // "f." matches 'f' plus the whole of é (not just its first
+        // byte), so the replacement swallows both.
         let mut buf = buf_with(&["café"]);
         let act = dispatch("s/f./Z/", &mut buf);
-        assert!(matches!(act, Action::Error(_)));
-        assert_eq!(buf.line(1), Some("café"));
+        assert!(!matches!(act, Action::Error(_)));
+        assert_eq!(buf.line(1), Some("caZ"));
     }
 
     #[test]
