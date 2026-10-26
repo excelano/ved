@@ -59,7 +59,7 @@ cargo install ved
 
 ### Build from source
 
-ved requires only a Rust toolchain (1.85+ for edition 2024). No external crates, no C dependencies, no runtime.
+ved requires only a Rust toolchain recent enough for the edition `Cargo.toml` names. No external crates, no C dependencies, no runtime.
 
 ```sh
 cd ved
@@ -184,7 +184,7 @@ without taking over the screen or disturbing your scrollback.
 
 ## Implementation
 
-Five modules of pure-stdlib Rust. Zero dependencies, no external crates, no C.
+Pure-stdlib Rust, one module per concern. Zero dependencies, no external crates, no C.
 
 | Module | Purpose |
 |---|---|
@@ -193,8 +193,6 @@ Five modules of pure-stdlib Rust. Zero dependencies, no external crates, no C.
 | `address.rs` | Address parser and resolver |
 | `buffer.rs` | Line buffer with current-line tracking |
 | `enc.rs` | Encoding sniff: warns on UTF-7/UTF-16 input before the read fails |
-
-The BRE engine started as a translation of Rob Pike's ~30-line recursive matcher from "The Practice of Programming," then grew bottom-up through a compile step (inspired by Ken Thompson's original ed), bracket expressions, capturing groups, and backreferences. The full history is in the git log.
 
 ### Limitations worth knowing
 
