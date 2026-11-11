@@ -28,8 +28,3 @@ assets = [
     ["README.md", "usr/share/doc/ved/README.md", "644"],
     ["LICENSE", "usr/share/doc/ved/copyright", "644"],
 ]
-
-# The profile that 'dist' will build with
-[profile.dist]
-inherits = "release"
-lto = "thin"
