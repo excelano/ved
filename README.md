@@ -26,21 +26,6 @@ sudo apt install ved
 
 Both amd64 and arm64 packages ship with every release.
 
-### Homebrew
-
-On macOS or Linux, tap and trust the repository once — Homebrew gates third-party taps behind explicit trust (one-time setup):
-
-```sh
-brew tap excelano/tap
-brew trust excelano/tap
-```
-
-Then install it, so `brew upgrade` keeps it current:
-
-```sh
-brew install ved
-```
-
 ### Windows
 
 With [WinGet](https://learn.microsoft.com/windows/package-manager/), so `winget upgrade` keeps it current:
