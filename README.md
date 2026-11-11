@@ -186,17 +186,9 @@ without taking over the screen or disturbing your scrollback.
 
 Pure-stdlib Rust, one module per concern. Zero dependencies, no external crates, no C.
 
-| Module | Purpose |
-|---|---|
-| `main.rs` | REPL, command dispatch, substitute/global/write/read |
-| `bre.rs` | BRE regex engine: compiler, matcher, replacement expander |
-| `address.rs` | Address parser and resolver |
-| `buffer.rs` | Line buffer with current-line tracking |
-| `enc.rs` | Encoding sniff: warns on UTF-7/UTF-16 input before the read fails |
+### Limitations
 
-### Limitations worth knowing
-
-Two limitations are inherited from ed and intentional, since changing them would make ved not-an-ed-clone:
+These limitations are inherited from ed and intentional, since changing them would make ved not-an-ed-clone:
 
 - **Newline-only record model.** Lines are delimited by `\n` (or `\r\n`). The ASCII information separators (RS, GS, FS, US) used in some text formats as record separators do *not* create addressable lines — a file using RS to separate records but no newlines loads as a single ved line. Use `l` to make embedded separators visible within a line.
 - **UTF-8 only.** Files are read via `std::fs::read_to_string`, which rejects invalid UTF-8. ved is a text editor, not a binary editor. UTF-8 text with multi-byte characters works; arbitrary binary does not. If a file looks like UTF-7 (the `+ACI-` escape from Scoutbook exports) or carries a UTF-16 BOM, ved prints a warning at startup with the `iconv` command needed to convert it, and `w` refuses to overwrite the original (saving edits as UTF-8 would silently corrupt the source). `w <newname>` to a different file still works as an escape valve.
