@@ -688,7 +688,7 @@ fn load_file(filename: &str, buf: &mut Buffer) -> Result<LoadOutcome, String> {
     };
     let bytes = content.len();
 
-    for line in content.lines() {
+    for line in split_lines(&content) {
         buf.append_after(buf.len(), line.to_string());
     }
     buf.set_filename(filename.to_string());
@@ -698,6 +698,13 @@ fn load_file(filename: &str, buf: &mut Buffer) -> Result<LoadOutcome, String> {
     }
 
     Ok(LoadOutcome::Loaded(bytes))
+}
+
+/// Split file contents into lines on `\n` alone. A `\r` before the
+/// `\n` stays in the line, as it does in ed, so a file with CRLF endings
+/// is written back with them.
+fn split_lines(content: &str) -> std::str::SplitTerminator<'_, char> {
+    content.split_terminator('\n')
 }
 
 /// Edit: replace the buffer with the contents of a file. The file is
@@ -759,7 +766,7 @@ fn run_read(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
     };
     let bytes = content.len();
 
-    for (insert_at, line) in (after..).zip(content.lines()) {
+    for (insert_at, line) in (after..).zip(split_lines(&content)) {
         buf.append_after(insert_at, line.to_string());
     }
 
@@ -1301,6 +1308,25 @@ mod tests {
         let act = dispatch(&format!("e {}", path.to_str().unwrap()), &mut buf);
         assert!(matches!(act, Action::Print(ref s) if s.contains("new file")));
         assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn crlf_line_endings_survive_a_load_and_a_write() {
+        let path = temp_path("crlf");
+        std::fs::write(&path, "one\r\ntwo\r\n").unwrap();
+        let mut buf = Buffer::new();
+        load_file(path.to_str().unwrap(), &mut buf).unwrap();
+        assert_eq!(buf.line(1), Some("one\r"));
+        assert!(matches!(dispatch("w", &mut buf), Action::Print(_)));
+        assert_eq!(std::fs::read(&path).unwrap(), b"one\r\ntwo\r\n");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn a_missing_final_newline_still_ends_the_last_line() {
+        assert_eq!(split_lines("a\nb").collect::<Vec<_>>(), ["a", "b"]);
+        assert_eq!(split_lines("a\nb\n").collect::<Vec<_>>(), ["a", "b"]);
+        assert_eq!(split_lines("").count(), 0);
     }
 
     #[test]
