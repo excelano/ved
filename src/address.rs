@@ -29,10 +29,15 @@ use crate::buffer::Buffer;
 
 pub enum Address {
     Number(usize),
+    /// The first line, or 0 in an empty buffer: what `,` starts from.
+    First,
     Current,
     Last,
     Offset(isize),
-    Search { pattern: Vec<u8>, forward: bool },
+    Search {
+        pattern: Vec<u8>,
+        forward: bool,
+    },
 }
 
 pub struct Spec {
@@ -59,7 +64,7 @@ impl Spec {
             if first == b',' {
                 return Ok((
                     Spec {
-                        start: Some(Address::Number(1)),
+                        start: Some(Address::First),
                         end: Some(Address::Last),
                     },
                     &input[1..],
@@ -269,12 +274,13 @@ fn take_digits(s: &str) -> (&str, &str) {
 fn resolve_one(addr: &Address, buf: &Buffer) -> Result<usize, String> {
     match addr {
         Address::Number(n) => Ok(*n),
+        Address::First => Ok(1.min(buf.len())),
         Address::Current => Ok(buf.current()),
         Address::Last => Ok(buf.len()),
         Address::Offset(n) => {
             let base = buf.current() as isize;
             let result = base + n;
-            if result < 1 {
+            if result < 0 {
                 Err("invalid address".to_string())
             } else {
                 Ok(result as usize)
@@ -315,6 +321,7 @@ fn search(pattern: &[u8], forward: bool, buf: &Buffer) -> Result<usize, String> 
 fn clone_addr(a: &Address) -> Address {
     match a {
         Address::Number(n) => Address::Number(*n),
+        Address::First => Address::First,
         Address::Current => Address::Current,
         Address::Last => Address::Last,
         Address::Offset(n) => Address::Offset(*n),

@@ -525,7 +525,7 @@ ved commands (addresses shown in brackets are optional):
   [.,.]d, delete        Delete the addressed lines
   [.,.]p, print         Print the addressed lines
   [.,.]n, number        Print with line numbers
-  [.,.]l, list          Print with non-printing chars as \\NNN octal, ending $
+  [.,.]l, list          Print with \\t-style escapes and \\NNN octal, ending $
   [.,.+1]j, join        Join the addressed lines into one (default: . and next)
   [.,.]m DEST           Move the addressed lines to after DEST (0 = top)
   [.,.]t DEST           Copy the addressed lines to after DEST (0 = top)
@@ -688,24 +688,40 @@ fn format_line(n: usize, line: &str, mode: &PrintMode) -> String {
     }
 }
 
-/// Render a line for the `l` (list) command: each byte outside
-/// printable ASCII becomes `\NNN` (3-digit octal), backslashes
-/// escape to `\\`, and a `$` marks end-of-line. Operates byte
-/// by byte so multi-byte UTF-8 sequences also become visible —
-/// the point of `l` is to disambiguate, including for cases
-/// like a non-breaking space hiding among regular spaces.
+/// Render a line for the `l` (list) command, as POSIX describes it: a
+/// backslash and the characters with C escapes (`\a \b \t \v \f \r`)
+/// are written as escapes, every other byte outside printable ASCII as
+/// `\NNN` octal, and `$` marks the end. Non-ASCII bytes are octal too, so
+/// a non-breaking space cannot hide among spaces. Long lines fold with a
+/// backslash and newline once a line has `LIST_WIDTH` columns, which is
+/// where GNU ed folds; POSIX leaves the width to the implementation.
 fn render_list_line(line: &str) -> String {
     let mut out = String::new();
+    let mut col = 0;
     for b in line.bytes() {
-        match b {
-            b'\\' => out.push_str("\\\\"),
-            0x20..=0x7E => out.push(b as char),
-            _ => out.push_str(&format!("\\{b:03o}")),
+        let unit = match b {
+            b'\\' => "\\\\".to_string(),
+            0x07 => "\\a".to_string(),
+            0x08 => "\\b".to_string(),
+            b'\t' => "\\t".to_string(),
+            0x0B => "\\v".to_string(),
+            0x0C => "\\f".to_string(),
+            b'\r' => "\\r".to_string(),
+            0x20..=0x7E => (b as char).to_string(),
+            _ => format!("\\{b:03o}"),
+        };
+        if col >= LIST_WIDTH {
+            out.push_str("\\\n");
+            col = 0;
         }
+        col += unit.len();
+        out.push_str(&unit);
     }
     out.push('$');
     out
 }
+
+const LIST_WIDTH: usize = 76;
 
 /// Load a file into the buffer, appending lines after position
 /// `after` (0 = start of buffer). Sets the filename and returns
@@ -823,6 +839,10 @@ fn run_read(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
 /// replacement, and global flag), erroring if none has run yet.
 fn run_substitute(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
     let args = args.as_bytes();
+    let range = match spec.resolve(buf) {
+        Ok(r) => r,
+        Err(e) => return Action::Error(e),
+    };
 
     let (subst, mode) = if args.is_empty() {
         match buf.last_subst() {
@@ -866,12 +886,6 @@ fn run_substitute(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
     };
 
     let re = bre::Regex::compile(&subst.pattern);
-
-    // Resolve the address range (default: current line).
-    let range = match spec.resolve(buf) {
-        Ok(r) => r,
-        Err(e) => return Action::Error(e),
-    };
 
     let mut last_modified_line = None;
 
@@ -1396,6 +1410,38 @@ mod tests {
     }
 
     #[test]
+    fn comma_on_an_empty_buffer_is_address_zero_for_a_and_i() {
+        for cmd in [",a", ",i", ";a", "$a", ".a"] {
+            let mut buf = Buffer::new();
+            assert!(
+                matches!(dispatch(cmd, &mut buf), Action::EnterInputMode),
+                "{cmd}"
+            );
+            assert_eq!(buf.current(), 0, "{cmd}");
+        }
+        for cmd in ["1a", "1,$a", ",p"] {
+            let mut buf = Buffer::new();
+            assert!(matches!(dispatch(cmd, &mut buf), Action::Error(_)), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn a_relative_address_can_reach_line_zero_where_zero_is_allowed() {
+        let mut buf = buf_with(&["a1", "b2", "a3"]);
+        buf.set_current(1);
+        assert!(matches!(dispatch("+1m-1", &mut buf), Action::Confirm(_)));
+        assert_eq!(lines_of(&buf), ["b2", "a1", "a3"]);
+        let mut buf = buf_with(&["a1", "b2"]);
+        buf.set_current(1);
+        assert!(matches!(dispatch("-1a", &mut buf), Action::EnterInputMode));
+        assert_eq!(buf.current(), 0);
+        let mut buf = buf_with(&["a1", "b2"]);
+        buf.set_current(1);
+        assert!(matches!(dispatch("-1p", &mut buf), Action::Error(_)));
+        assert!(matches!(dispatch("-2t0", &mut buf), Action::Error(_)));
+    }
+
+    #[test]
     fn global_delete_leaves_the_line_after_the_last_deletion_current() {
         let mut buf = buf_with(&["a1", "b2", "a3", "b4", "a5", "ab6"]);
         dispatch("g/a/d", &mut buf);
@@ -1589,8 +1635,27 @@ mod tests {
     }
 
     #[test]
-    fn list_tab_becomes_octal() {
-        assert_eq!(render_list_line("a\tb"), "a\\011b$");
+    fn list_writes_c_escapes_where_posix_names_them() {
+        let line = "a\tb\\c\rd\u{7}e\u{8}f\u{c}g\u{b}h\u{1}i\u{7f}j";
+        assert_eq!(
+            render_list_line(line),
+            "a\\tb\\\\c\\rd\\ae\\bf\\fg\\vh\\001i\\177j$"
+        );
+    }
+
+    #[test]
+    fn list_folds_a_line_after_76_columns() {
+        let a = |n| "a".repeat(n);
+        assert_eq!(render_list_line(&a(76)), format!("{}$", a(76)));
+        assert_eq!(render_list_line(&a(77)), format!("{}\\\na$", a(76)));
+        assert_eq!(
+            render_list_line(&a(152)),
+            format!("{}\\\n{}$", a(76), a(76))
+        );
+        assert_eq!(
+            render_list_line(&format!("{}\t", a(75))),
+            format!("{}\\t$", a(75))
+        );
     }
 
     #[test]
@@ -2067,6 +2132,14 @@ mod tests {
             assert!(matches!(dispatch(cmd, &mut buf), Action::Error(_)), "{cmd}");
             assert_eq!(buf.line(1), Some("a"), "{cmd}");
         }
+    }
+
+    #[test]
+    fn substitute_with_an_invalid_address_is_not_remembered() {
+        let mut buf = buf_with(&["aaa", "bbb"]);
+        assert!(matches!(dispatch("9s/a/X/g", &mut buf), Action::Error(_)));
+        assert!(matches!(dispatch("1s", &mut buf), Action::Error(_)));
+        assert_eq!(buf.line(1), Some("aaa"));
     }
 
     #[test]

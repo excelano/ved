@@ -100,7 +100,7 @@ ved prints the file's size when it opens it, confirms each change, and says how 
 | `[.,.]d` | `delete` | Delete the addressed lines |
 | `[.,.]p` | `print` | Print the addressed lines |
 | `[.,.]n` | `number` | Print with line numbers |
-| `[.,.]l` | `list` | Print with non-printing bytes as `\NNN` octal, ending `$` |
+| `[.,.]l` | `list` | Print with `\t`-style escapes and other non-printing bytes as `\NNN` octal, ending `$`, folding long lines |
 | `[.,.+1]j` | `join` | Join the addressed lines into one (default: `.` and next) |
 | `[.,.]m DEST` | | Move the addressed lines to after DEST (0 = top) |
 | `[.,.]t DEST` | | Copy the addressed lines to after DEST (0 = top) |
