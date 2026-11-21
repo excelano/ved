@@ -481,6 +481,10 @@ fn run_global(spec: &Spec, buf: &mut Buffer, args: &str, invert: bool) -> Action
         for &n in marked.iter().rev() {
             buf.delete_range(n, n);
         }
+        if let Some(&last) = marked.last() {
+            let after_last = last + 1 - marked.len();
+            buf.set_current(after_last.min(buf.len()));
+        }
         return Action::Done;
     }
 
@@ -1390,6 +1394,19 @@ mod tests {
 
     fn lines_of(buf: &Buffer) -> Vec<&str> {
         (1..=buf.len()).filter_map(|n| buf.line(n)).collect()
+    }
+
+    #[test]
+    fn global_delete_leaves_the_line_after_the_last_deletion_current() {
+        let mut buf = buf_with(&["a1", "b2", "a3", "b4", "a5", "ab6"]);
+        dispatch("g/a/d", &mut buf);
+        assert_eq!(buf.line(buf.current()), Some("b4"));
+        let mut buf = buf_with(&["a1", "b2", "a3", "b4"]);
+        dispatch("g/a/d", &mut buf);
+        assert_eq!(buf.line(buf.current()), Some("b4"));
+        let mut buf = buf_with(&["a1", "a2"]);
+        dispatch("g/a/d", &mut buf);
+        assert_eq!(buf.current(), 0);
     }
 
     #[test]
