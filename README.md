@@ -100,11 +100,13 @@ Goodbye world
 | `[.,.]t DEST` | | Copy the addressed lines to after DEST (0 = top) |
 | `[.,.]s/re/new/[g]` | | Substitute: replace regex matches in addressed lines |
 | `[.,.]s` | | Repeat the last substitute (pattern, replacement, flags) |
-| `[.,.]g/re/cmd` | | Global: run a command on every line matching a regex |
-| `[.,.]v/re/cmd` | | Inverse global: run a command on lines NOT matching |
-| `[.,.]w [file]` | | Write the addressed lines (default: all) to a file |
-| `e [file]` | | Edit: replace the buffer with a file's contents |
-| `r [file]` | | Read: append a file's contents after the addressed line |
+| `[1,$]g/re/cmd` | | Global: run a command on every line matching a regex |
+| `[1,$]v/re/cmd` | | Inverse global: run a command on lines NOT matching |
+| `[1,$]w [file]` | `write` | Write the addressed lines to a file |
+| `[1,$]wq [file]` | | Write, then quit |
+| `e [file]` | `edit` | Edit: replace the buffer with a file's contents (warns on unsaved changes; repeat to force) |
+| `E [file]` | | Edit, discarding unsaved changes |
+| `[$]r [file]` | `read` | Read: append a file's contents after the addressed line |
 | `q` | `quit` | Quit (warns on unsaved changes; repeat to force) |
 | `Q` | | Quit unconditionally |
 | `H` | `help` | Print the command reference |
