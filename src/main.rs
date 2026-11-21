@@ -1058,7 +1058,7 @@ fn run_write(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
     let bytes = content.len();
 
     if let Err(e) = std::fs::write(&filename, &content) {
-        return Action::Error(format!("cannot write {}: {}", filename, e));
+        return Action::Error(format!("cannot write {filename}: {e}"));
     }
 
     // Build the confirmation message before we move `filename` into
