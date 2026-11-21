@@ -574,7 +574,7 @@ fn run_delete(spec: &Spec, buf: &mut Buffer) -> Action {
 /// Join the addressed lines into a single line at the start of the
 /// range. Default address is `.,.+1` — bare `j` joins the current
 /// line with the next, matching ed. A single-line range is a silent
-/// no-op (still sets current). The joined line is the literal
+/// no-op that leaves the current line alone. The joined line is the literal
 /// concatenation: ed does not insert separators.
 fn run_join(spec: &Spec, buf: &mut Buffer) -> Action {
     let range = match spec.resolve_or_pair_with_next(buf) {
@@ -582,7 +582,6 @@ fn run_join(spec: &Spec, buf: &mut Buffer) -> Action {
         Err(e) => return Action::Error(e),
     };
     if range.start == range.end {
-        buf.set_current(range.start);
         return Action::Done;
     }
     let mut joined = String::new();
@@ -1659,7 +1658,7 @@ mod tests {
         assert!(matches!(act, Action::Done));
         assert_eq!(buf.len(), 3);
         assert_eq!(buf.line(2), Some("two"));
-        assert_eq!(buf.current(), 2);
+        assert_eq!(buf.current(), 3, "the current line is unchanged");
     }
 
     #[test]
