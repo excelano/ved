@@ -265,28 +265,19 @@ fn dispatch(cmd: &str, buf: &mut Buffer) -> Action {
     match rest {
         "q" | "quit" => return Action::Quit,
         "a" | "append" => {
-            // Append after the addressed line (default: current).
-            // On an empty buffer, current is 0 and append_after(0)
-            // inserts at the start — correct.
-            if !buf.is_empty()
-                && let Ok(r) = spec.resolve(buf)
-            {
-                buf.set_current(r.end);
+            match spec.resolve_target(buf) {
+                Ok(n) => buf.set_current(n),
+                Err(e) => return Action::Error(e),
             }
             return Action::EnterInputMode;
         }
         "i" | "insert" => {
-            // Insert before the addressed line (default: current).
-            // Implemented as "append after address - 1", so the
-            // input-mode loop (which always does append_after) works
-            // unchanged. On an empty buffer or address 1, current
-            // becomes 0 (the before-first-line sentinel).
-            if !buf.is_empty() {
-                let addr = match spec.resolve(buf) {
-                    Ok(r) => r.end,
-                    Err(e) => return Action::Error(e),
-                };
-                buf.set_current(addr.saturating_sub(1));
+            // Insert before the target is append after the line above
+            // it, so the input-mode loop always appends. 0i and 1i
+            // both insert at the top, as in ed.
+            match spec.resolve_target(buf) {
+                Ok(n) => buf.set_current(n.saturating_sub(1)),
+                Err(e) => return Action::Error(e),
             }
             return Action::EnterInputMode;
         }
@@ -1361,6 +1352,48 @@ mod tests {
         let mut buf = buf_with(&["1", "2", "3", "4"]);
         dispatch("g/^/m0", &mut buf);
         assert_eq!(lines_of(&buf), ["4", "3", "2", "1"]);
+    }
+
+    #[test]
+    fn append_and_insert_accept_the_addresses_ed_accepts() {
+        // Each case: command, the line input mode appends after.
+        for (cmd, after) in [
+            ("0a", 0),
+            ("$a", 3),
+            ("2a", 2),
+            ("1,2a", 2),
+            ("3,1a", 1),
+            ("a", 1),
+        ] {
+            let mut buf = buf_with(&["one", "two", "three"]);
+            buf.set_current(1);
+            assert!(
+                matches!(dispatch(cmd, &mut buf), Action::EnterInputMode),
+                "{cmd}"
+            );
+            assert_eq!(buf.current(), after, "{cmd}");
+        }
+        for (cmd, after) in [("0i", 0), ("1i", 0), ("3i", 2)] {
+            let mut buf = buf_with(&["one", "two", "three"]);
+            assert!(
+                matches!(dispatch(cmd, &mut buf), Action::EnterInputMode),
+                "{cmd}"
+            );
+            assert_eq!(buf.current(), after, "{cmd}");
+        }
+    }
+
+    #[test]
+    fn append_and_insert_reject_an_address_past_the_end() {
+        for cmd in ["5a", "9,3a", "5i"] {
+            let mut buf = buf_with(&["one", "two", "three"]);
+            buf.set_current(1);
+            assert!(matches!(dispatch(cmd, &mut buf), Action::Error(_)), "{cmd}");
+            assert_eq!(buf.current(), 1, "{cmd} must not move the current line");
+        }
+        let mut empty = Buffer::new();
+        assert!(matches!(dispatch("a", &mut empty), Action::EnterInputMode));
+        assert!(matches!(dispatch("1a", &mut empty), Action::Error(_)));
     }
 
     #[test]
