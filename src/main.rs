@@ -432,6 +432,9 @@ fn run_global(spec: &Spec, buf: &mut Buffer, args: &str, invert: bool) -> Action
     }
 
     let delim = args_bytes[0];
+    if !valid_delimiter(delim) {
+        return Action::Error("invalid delimiter".to_string());
+    }
     let after_delim = &args_bytes[1..];
 
     // Parse pattern: read until unescaped delimiter.
@@ -825,6 +828,9 @@ fn run_substitute(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
         }
     } else {
         let delim = args[0];
+        if !valid_delimiter(delim) {
+            return Action::Error("invalid delimiter".to_string());
+        }
         let rest = &args[1..];
 
         let (pattern, rest) = match scan_delimited(rest, delim) {
@@ -900,6 +906,12 @@ fn run_substitute(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
         }
         None => Action::Error("no match".to_string()),
     }
+}
+
+/// POSIX allows any character but space and newline. The fields are
+/// scanned byte by byte, so ved also requires it to be one byte.
+fn valid_delimiter(delim: u8) -> bool {
+    delim.is_ascii() && !matches!(delim, b' ' | b'\n')
 }
 
 /// Split `input` at the first unescaped `delim`, returning the field
@@ -2018,6 +2030,27 @@ mod tests {
         let mut fresh = buf_with(&["ab"]);
         assert!(matches!(dispatch("s/a/%/", &mut fresh), Action::Error(_)));
         assert_eq!(fresh.line(1), Some("ab"));
+    }
+
+    #[test]
+    fn backslash_can_be_the_delimiter() {
+        let mut buf = buf_with(&["a"]);
+        dispatch("s\\a\\b\\", &mut buf);
+        assert_eq!(buf.line(1), Some("b"));
+    }
+
+    #[test]
+    fn a_delimiter_that_is_not_one_ascii_byte_is_an_error_not_a_panic() {
+        for cmd in [
+            "s\u{e9}*\u{d7}j\\",
+            "s\u{e9}a\u{e9}b\u{e9}",
+            "g\u{e9}a\u{e9}p",
+            "s a b ",
+        ] {
+            let mut buf = buf_with(&["a"]);
+            assert!(matches!(dispatch(cmd, &mut buf), Action::Error(_)), "{cmd}");
+            assert_eq!(buf.line(1), Some("a"), "{cmd}");
+        }
     }
 
     #[test]
