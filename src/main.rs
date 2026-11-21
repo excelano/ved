@@ -821,11 +821,7 @@ fn run_substitute(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
         };
         let line_bytes = line.as_bytes();
 
-        let new_line = if global {
-            substitute_all(&re, line_bytes, &replacement)
-        } else {
-            substitute_first(&re, line_bytes, &replacement)
-        };
+        let new_line = substitute(&re, line_bytes, &replacement, 1, global);
 
         if let Some(new_bytes) = new_line {
             // Always valid UTF-8: `line_bytes` and `replacement` are
@@ -873,55 +869,61 @@ fn scan_delimited(input: &[u8], delim: u8) -> Option<(&[u8], &[u8])> {
     None
 }
 
-/// Replace the first match in `text`. Returns None if no match.
-fn substitute_first(re: &bre::Regex, text: &[u8], replacement: &[u8]) -> Option<Vec<u8>> {
-    let m = re.find(text)?;
+/// Replace matches of `re` in `text`: the `nth` match (counting from 1),
+/// and with `global` every match after it too. Returns None if nothing
+/// was replaced.
+///
+/// Searching resumes in the whole line rather than in the slice after
+/// the last match, so `^` can match only at the start of the line. An
+/// empty match at the position where the previous match ended is not a
+/// new match, which is POSIX's rule: `s/a*/X/g` on `baaac` gives
+/// `XbXcX`, with one X for `aaa` and none for the nothing after it.
+fn substitute(
+    re: &bre::Regex,
+    text: &[u8],
+    replacement: &[u8],
+    nth: usize,
+    global: bool,
+) -> Option<Vec<u8>> {
     let mut result = Vec::new();
-    result.extend_from_slice(&text[..m.start]);
-    result.extend_from_slice(&bre::expand_replacement(replacement, &m, text));
-    result.extend_from_slice(&text[m.end..]);
-    Some(result)
-}
+    let mut copied = 0;
+    let mut search = 0;
+    let mut prev_end = None;
+    let mut seen = 0;
+    let mut replaced = false;
 
-/// Replace all non-overlapping matches in `text`. Returns None
-/// if no match was found at all.
-fn substitute_all(re: &bre::Regex, text: &[u8], replacement: &[u8]) -> Option<Vec<u8>> {
-    let mut result = Vec::new();
-    let mut pos = 0;
-    let mut matched = false;
-
-    while pos <= text.len() {
-        match re.find(&text[pos..]) {
-            Some(m) => {
-                matched = true;
-                let abs_start = pos + m.start;
-                let abs_end = pos + m.end;
-                result.extend_from_slice(&text[pos..abs_start]);
-                // For expand_replacement, the Match positions are
-                // relative to the slice we searched, but we need
-                // them relative to that same slice for text lookup.
-                result.extend_from_slice(&bre::expand_replacement(replacement, &m, &text[pos..]));
-                // Advance past the match. If the match was empty (a
-                // pattern like `x*` or `.*` can match nothing), step
-                // one whole character to avoid an infinite loop —
-                // one raw byte would risk splitting a multi-byte
-                // character right where matching resumes.
-                if abs_end == abs_start {
-                    let w = bre::char_width(&text[abs_start..]);
-                    result.extend_from_slice(&text[abs_start..abs_start + w]);
-                    pos = abs_start + w.max(1);
-                } else {
-                    pos = abs_end;
-                }
-            }
-            None => {
-                result.extend_from_slice(&text[pos..]);
+    while search <= text.len() {
+        let Some(m) = re.find_at(text, search) else {
+            break;
+        };
+        let step = if m.start == m.end {
+            bre::char_width(&text[m.start..]).max(1)
+        } else {
+            0
+        };
+        if m.start == m.end && prev_end == Some(m.start) {
+            search = m.start + step;
+            continue;
+        }
+        seen += 1;
+        if seen >= nth {
+            result.extend_from_slice(&text[copied..m.start]);
+            result.extend_from_slice(&bre::expand_replacement(replacement, &m, text));
+            copied = m.end;
+            replaced = true;
+            if !global {
                 break;
             }
         }
+        prev_end = Some(m.end);
+        search = m.end + step;
     }
 
-    if matched { Some(result) } else { None }
+    if !replaced {
+        return None;
+    }
+    result.extend_from_slice(&text[copied..]);
+    Some(result)
 }
 
 /// Write the addressed range to a file. Empty spec defaults to the
@@ -1917,15 +1919,31 @@ mod tests {
 
     #[test]
     fn global_substitute_with_star_that_can_match_empty_preserves_characters() {
-        // `[a-z]*` matches zero-width at é (not a-z), and the old
-        // empty-match stepping in substitute_all advanced by one raw
-        // byte to avoid looping forever — splitting é in half and
-        // panicking on the UTF-8 rebuild. It has to step by one
-        // whole character instead.
+        // `[a-z]*` matches zero-width at é, and stepping past an empty
+        // match has to move a whole character, not a byte. The empty
+        // match right after `caf` is not a new match. sed gives XéX.
         let mut buf = buf_with(&["café"]);
         let act = dispatch("s/[a-z]*/X/g", &mut buf);
         assert!(!matches!(act, Action::Error(_)));
-        assert_eq!(buf.line(1), Some("XXéX"));
+        assert_eq!(buf.line(1), Some("XéX"));
+    }
+
+    #[test]
+    fn substitute_global_matches_caret_once_and_skips_adjacent_empty_matches() {
+        // Expected values are sed's: GNU ed refuses the empty-match
+        // cases with "Infinite substitution loop".
+        for (line, cmd, want) in [
+            ("aaa", "s/^a/X/g", "Xaa"),
+            ("baaac", "s/a*/X/g", "XbXcX"),
+            ("abc", "s/x*/-/g", "-a-b-c-"),
+            ("abc", "s/b*/-/g", "-a-c-"),
+            ("bca", "s/a*$/E/g", "bcE"),
+            ("abc", "s/$/!/g", "abc!"),
+        ] {
+            let mut buf = buf_with(&[line]);
+            dispatch(cmd, &mut buf);
+            assert_eq!(buf.line(1), Some(want), "{cmd} on {line}");
+        }
     }
 
     // ── search addresses: /pattern/ and ?pattern? ─────────────

@@ -256,11 +256,22 @@ impl Regex {
     /// it, returning a match that starts or ends mid-character after
     /// all. Skipping straight to the next boundary closes that.
     pub fn find(&self, text: &[u8]) -> Option<Match> {
+        self.find_at(text, 0)
+    }
+
+    /// Find the leftmost match in `text` that starts at or after
+    /// `start`, which must be a character boundary. The whole line is
+    /// the context, so `^` matches only at offset 0 and offsets in the
+    /// result are offsets into `text`.
+    pub fn find_at(&self, text: &[u8], start: usize) -> Option<Match> {
         let elements = &self.elements;
         let anchored = !elements.is_empty() && matches!(elements[0], Element::Caret);
         let elems = if anchored { &elements[1..] } else { elements };
+        if anchored && start > 0 {
+            return None;
+        }
 
-        let mut offset = 0;
+        let mut offset = start;
         loop {
             let caps = Caps::new();
             if let Some((len, caps)) = self.match_here(elems, &text[offset..], offset, caps, text) {
