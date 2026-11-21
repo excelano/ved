@@ -793,13 +793,21 @@ fn run_substitute(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
 
         let (replacement, rest) = scan_delimited(rest, delim).unwrap_or((rest, &[]));
 
+        let replacement = if replacement == b"%" {
+            match buf.last_subst() {
+                Some(last) => last.replacement.clone(),
+                None => return Action::Error("no previous substitute".to_string()),
+            }
+        } else {
+            replacement.to_vec()
+        };
         let (nth, global, mode) = match parse_suffix(rest) {
             Ok(s) => s,
             Err(e) => return Action::Error(e),
         };
         let subst = Substitution {
             pattern: pattern.to_vec(),
-            replacement: replacement.to_vec(),
+            replacement,
             nth,
             global,
         };
@@ -1946,6 +1954,19 @@ mod tests {
         dispatch("1s/a/X/2", &mut buf);
         dispatch("2s", &mut buf);
         assert_eq!(buf.line(2), Some("aXa"));
+    }
+
+    #[test]
+    fn percent_alone_is_the_previous_replacement() {
+        let mut buf = buf_with(&["ab"]);
+        dispatch("s/a/X/", &mut buf);
+        dispatch("s/b/%/", &mut buf);
+        assert_eq!(buf.line(1), Some("XX"));
+        dispatch("s/X/a%/", &mut buf);
+        assert_eq!(buf.line(1), Some("a%X"));
+        let mut fresh = buf_with(&["ab"]);
+        assert!(matches!(dispatch("s/a/%/", &mut fresh), Action::Error(_)));
+        assert_eq!(fresh.line(1), Some("ab"));
     }
 
     #[test]
