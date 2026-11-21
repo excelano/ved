@@ -274,7 +274,7 @@ fn resolve_one(addr: &Address, buf: &Buffer) -> Result<usize, String> {
         Address::Offset(n) => {
             let base = buf.current() as isize;
             let result = base + n;
-            if result < 1 {
+            if result < 0 {
                 Err("invalid address".to_string())
             } else {
                 Ok(result as usize)

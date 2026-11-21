@@ -1396,6 +1396,22 @@ mod tests {
     }
 
     #[test]
+    fn a_relative_address_can_reach_line_zero_where_zero_is_allowed() {
+        let mut buf = buf_with(&["a1", "b2", "a3"]);
+        buf.set_current(1);
+        assert!(matches!(dispatch("+1m-1", &mut buf), Action::Confirm(_)));
+        assert_eq!(lines_of(&buf), ["b2", "a1", "a3"]);
+        let mut buf = buf_with(&["a1", "b2"]);
+        buf.set_current(1);
+        assert!(matches!(dispatch("-1a", &mut buf), Action::EnterInputMode));
+        assert_eq!(buf.current(), 0);
+        let mut buf = buf_with(&["a1", "b2"]);
+        buf.set_current(1);
+        assert!(matches!(dispatch("-1p", &mut buf), Action::Error(_)));
+        assert!(matches!(dispatch("-2t0", &mut buf), Action::Error(_)));
+    }
+
+    #[test]
     fn global_delete_leaves_the_line_after_the_last_deletion_current() {
         let mut buf = buf_with(&["a1", "b2", "a3", "b4", "a5", "ab6"]);
         dispatch("g/a/d", &mut buf);
