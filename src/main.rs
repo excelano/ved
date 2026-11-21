@@ -299,12 +299,10 @@ fn dispatch(cmd: &str, buf: &mut Buffer) -> Action {
     // a character and pass the rest as the argument string. Splitting
     // with the iterator rather than a byte offset keeps a multi-byte
     // first character from slicing `rest` off a char boundary.
-    let mut chars = rest.chars();
-    let first = match chars.next() {
-        Some(c) => c,
+    let (first, args) = match split_command(rest) {
+        Some(parts) => parts,
         None => return Action::Error(format!("unknown command: {rest}")),
     };
-    let args = chars.as_str();
     match first {
         'e' => run_edit(buf, args),
         'r' => run_read(&spec, buf, args),
@@ -324,6 +322,35 @@ fn dispatch(cmd: &str, buf: &mut Buffer) -> Action {
         't' => run_transfer(&spec, buf, args),
         _ => Action::Error(format!("unknown command: {rest}")),
     }
+}
+
+/// Split a stage-two command into its letter and its argument string.
+///
+/// `e`, `r` and `w` take a filename, so the letter must be followed by
+/// whitespace or the end of the line: `wfoo` is an error, as in ed, and
+/// cannot write to a file named `foo`. That rule is what makes the long
+/// forms `edit`, `read` and `write` unambiguous. `wq` is the one
+/// exception, handled in the `w` arm.
+fn split_command(rest: &str) -> Option<(char, &str)> {
+    for (long, letter) in [("edit", 'e'), ("read", 'r'), ("write", 'w')] {
+        if let Some(args) = rest.strip_prefix(long)
+            && (args.is_empty() || args.starts_with(char::is_whitespace))
+        {
+            return Some((letter, args));
+        }
+    }
+    let mut chars = rest.chars();
+    let first = chars.next()?;
+    let args = chars.as_str();
+    let takes_filename = matches!(first, 'e' | 'r' | 'w');
+    let is_wq = first == 'w'
+        && args
+            .strip_prefix('q')
+            .is_some_and(|f| f.is_empty() || f.starts_with(char::is_whitespace));
+    if takes_filename && !is_wq && !(args.is_empty() || args.starts_with(char::is_whitespace)) {
+        return None;
+    }
+    Some((first, args))
 }
 
 /// Global command: scan the addressed range for lines matching
@@ -1106,6 +1133,43 @@ mod tests {
         let mut buf = buf_with(&["foo"]);
         let act = dispatch("wq", &mut buf);
         assert!(matches!(act, Action::Error(_)));
+    }
+
+    #[test]
+    fn write_letter_glued_to_a_word_is_an_error_not_a_filename() {
+        let mut buf = buf_with(&["foo"]);
+        for cmd in ["wfoo", "efoo", "rfoo", "writer", "wqx"] {
+            let act = dispatch(cmd, &mut buf);
+            assert!(matches!(act, Action::Error(_)), "{cmd} should be an error");
+        }
+        assert_eq!(buf.len(), 1);
+    }
+
+    #[test]
+    fn long_form_write_edit_and_read_name_the_file_that_follows() {
+        let path = temp_path("long_forms");
+        let p = path.to_str().unwrap();
+        let mut buf = buf_with(&["foo"]);
+        assert!(matches!(
+            dispatch(&format!("write {p}"), &mut buf),
+            Action::Print(_)
+        ));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "foo\n");
+        assert!(matches!(
+            dispatch(&format!("read {p}"), &mut buf),
+            Action::Print(_)
+        ));
+        assert_eq!(buf.len(), 2);
+        assert!(matches!(
+            dispatch(&format!("write {p}"), &mut buf),
+            Action::Print(_)
+        ));
+        assert!(matches!(
+            dispatch(&format!("edit {p}"), &mut buf),
+            Action::Print(_)
+        ));
+        assert_eq!(buf.len(), 2);
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
