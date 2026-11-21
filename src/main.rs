@@ -98,10 +98,11 @@ fn run_repl(prompt: Option<&str>, filename: Option<&str>) -> ExitCode {
     let mut line = String::new();
     let mut buffer = Buffer::new();
     let mut input_mode = false;
-    // ed's "unsaved changes" guard. The first `q` on a modified
-    // buffer flips this on and prints a warning instead of quitting.
-    // Any other command in between resets it.
-    let mut quit_warned = false;
+    // ed's "unsaved changes" guard. The first `q` or `e` on a modified
+    // buffer flips this on and prints a warning instead of acting. A
+    // second `q` or `e` straight after it goes ahead; any other command
+    // in between resets it.
+    let mut modified_warned = false;
 
     // If a filename was given on the command line, load it.
     if let Some(f) = filename {
@@ -152,11 +153,19 @@ fn run_repl(prompt: Option<&str>, filename: Option<&str>) -> ExitCode {
             continue;
         }
 
-        match dispatch(trimmed, &mut buffer) {
+        let action = match dispatch(trimmed, &mut buffer) {
+            Action::EditModified(args) if modified_warned => run_edit(&mut buffer, &args),
+            other => other,
+        };
+        match action {
+            Action::EditModified(_) => {
+                let _ = writeln!(out, "? warning: buffer modified");
+                modified_warned = true;
+            }
             Action::Quit => {
-                if buffer.is_modified() && !quit_warned {
+                if buffer.is_modified() && !modified_warned {
                     let _ = writeln!(out, "? warning: buffer modified");
-                    quit_warned = true;
+                    modified_warned = true;
                 } else {
                     return ExitCode::SUCCESS;
                 }
@@ -170,21 +179,21 @@ fn run_repl(prompt: Option<&str>, filename: Option<&str>) -> ExitCode {
             }
             Action::EnterInputMode => {
                 input_mode = true;
-                quit_warned = false;
+                modified_warned = false;
             }
             Action::Done => {
-                quit_warned = false;
+                modified_warned = false;
             }
             Action::Print(msg) => {
                 let _ = writeln!(out, "{msg}");
-                quit_warned = false;
+                modified_warned = false;
             }
             Action::Error(msg) => {
                 // ved's friendly-error format. Slice 9 will route
                 // every error path through this variant and may add
                 // an H toggle to suppress the message like real ed.
                 let _ = writeln!(out, "? {msg}");
-                quit_warned = false;
+                modified_warned = false;
             }
         }
     }
@@ -195,6 +204,9 @@ enum Action {
     Quit,
     ForceQuit,
     PrintAndQuit(String),
+    /// `e` on a modified buffer, carrying its argument. The loop
+    /// warns the first time and runs the edit the second.
+    EditModified(String),
     EnterInputMode,
     Done,
     Print(String),
@@ -304,7 +316,8 @@ fn dispatch(cmd: &str, buf: &mut Buffer) -> Action {
         None => return Action::Error(format!("unknown command: {rest}")),
     };
     match first {
-        'e' => run_edit(buf, args),
+        'e' if buf.is_modified() => Action::EditModified(args.to_string()),
+        'e' | 'E' => run_edit(buf, args),
         'r' => run_read(&spec, buf, args),
         'g' => run_global(&spec, buf, args, false),
         'v' => run_global(&spec, buf, args, true),
@@ -342,7 +355,7 @@ fn split_command(rest: &str) -> Option<(char, &str)> {
     let mut chars = rest.chars();
     let first = chars.next()?;
     let args = chars.as_str();
-    let takes_filename = matches!(first, 'e' | 'r' | 'w');
+    let takes_filename = matches!(first, 'e' | 'E' | 'r' | 'w');
     let is_wq = first == 'w'
         && args
             .strip_prefix('q')
@@ -681,8 +694,10 @@ fn load_file(filename: &str, buf: &mut Buffer) -> Result<LoadOutcome, String> {
     Ok(LoadOutcome::Loaded(bytes))
 }
 
-/// Edit: replace the buffer with the contents of a file.
-/// Warns if the buffer has unsaved changes (like q does).
+/// Edit: replace the buffer with the contents of a file. The file is
+/// loaded into a new buffer, so a failed load leaves the old one as it
+/// was. The unsaved-changes check is the caller's: `e` goes through the
+/// loop's warning, `E` does not.
 fn run_edit(buf: &mut Buffer, args: &str) -> Action {
     let filename_arg = args.trim_start();
 
@@ -695,13 +710,14 @@ fn run_edit(buf: &mut Buffer, args: &str) -> Action {
         filename_arg.to_string()
     };
 
-    // Replace the buffer entirely.
-    *buf = Buffer::new();
-    match load_file(&filename, buf) {
+    let mut fresh = Buffer::new();
+    let action = match load_file(&filename, &mut fresh) {
         Ok(LoadOutcome::Loaded(bytes)) => Action::Print(format!("{bytes}")),
         Ok(LoadOutcome::NewFile) => Action::Print(format!("{filename}: new file")),
-        Err(e) => Action::Error(e),
-    }
+        Err(e) => return Action::Error(e),
+    };
+    *buf = fresh;
+    action
 }
 
 /// Read: append the contents of a file after the addressed line.
@@ -1252,6 +1268,7 @@ mod tests {
         let path = temp_path("edit_replace");
         std::fs::write(&path, "new1\nnew2\n").unwrap();
         let mut buf = buf_with(&["old1", "old2", "old3"]);
+        buf.mark_saved();
         let act = dispatch(&format!("e {}", path.to_str().unwrap()), &mut buf);
         assert!(matches!(act, Action::Print(_)));
         assert_eq!(buf.len(), 2);
@@ -1263,6 +1280,7 @@ mod tests {
     #[test]
     fn edit_with_no_filename_and_none_remembered_errors() {
         let mut buf = buf_with(&["x"]);
+        buf.mark_saved();
         let act = dispatch("e", &mut buf);
         assert!(matches!(act, Action::Error(_)));
         // A failed edit must not touch the buffer.
@@ -1273,9 +1291,39 @@ mod tests {
     fn edit_of_a_missing_file_wipes_the_buffer_as_a_new_file() {
         let path = temp_path("edit_missing");
         let mut buf = buf_with(&["old1"]);
+        buf.mark_saved();
         let act = dispatch(&format!("e {}", path.to_str().unwrap()), &mut buf);
         assert!(matches!(act, Action::Print(ref s) if s.contains("new file")));
         assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn edit_on_a_modified_buffer_asks_the_loop_to_warn() {
+        let mut buf = buf_with(&["unsaved"]);
+        let act = dispatch("e other.txt", &mut buf);
+        assert!(matches!(act, Action::EditModified(ref a) if a.trim() == "other.txt"));
+        assert_eq!(buf.line(1), Some("unsaved"));
+    }
+
+    #[test]
+    fn capital_e_edits_a_modified_buffer_without_asking() {
+        let path = temp_path("capital_e");
+        std::fs::write(&path, "new\n").unwrap();
+        let mut buf = buf_with(&["unsaved"]);
+        let act = dispatch(&format!("E {}", path.to_str().unwrap()), &mut buf);
+        assert!(matches!(act, Action::Print(_)));
+        assert_eq!(buf.line(1), Some("new"));
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn edit_that_fails_to_load_leaves_the_buffer_alone() {
+        let dir = std::env::temp_dir();
+        let mut buf = buf_with(&["unsaved"]);
+        let act = dispatch(&format!("E {}", dir.to_str().unwrap()), &mut buf);
+        assert!(matches!(act, Action::Error(_)));
+        assert_eq!(buf.line(1), Some("unsaved"));
+        assert!(buf.is_modified());
     }
 
     // ── render_list_line (l command) ─────────────────────────
