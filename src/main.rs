@@ -188,6 +188,11 @@ fn run_repl(prompt: Option<&str>, filename: Option<&str>) -> ExitCode {
                 let _ = writeln!(out, "{msg}");
                 modified_warned = false;
             }
+            Action::PrintThenError(output, msg) => {
+                let _ = writeln!(out, "{output}");
+                let _ = writeln!(out, "? {msg}");
+                modified_warned = false;
+            }
             Action::Error(msg) => {
                 // ved's friendly-error format. Slice 9 will route
                 // every error path through this variant and may add
@@ -204,6 +209,9 @@ enum Action {
     Quit,
     ForceQuit,
     PrintAndQuit(String),
+    /// Output from a command that ran partway and then failed, as `g`
+    /// does when its command fails on one of the marked lines.
+    PrintThenError(String, String),
     /// `e` on a modified buffer, carrying its argument. The loop
     /// warns the first time and runs the edit the second.
     EditModified(String),
@@ -404,35 +412,37 @@ fn run_global(spec: &Spec, buf: &mut Buffer, args: &str, invert: bool) -> Action
         Err(e) => return Action::Error(e),
     };
 
-    // Scan and mark matching lines.
-    let mut marked = Vec::new();
+    // Mark every matching line, then visit the marks. A mark belongs to
+    // its line, so a command that inserts, deletes or moves lines
+    // leaves the remaining marks on the lines they were set on.
+    buf.clear_marks();
+    let mut any = false;
     for n in range.start..=range.end {
-        if let Some(line) = buf.line(n) {
-            let matched = re.find(line.as_bytes()).is_some();
-            if matched != invert {
-                marked.push(n);
-            }
+        if let Some(line) = buf.line(n)
+            && re.find(line.as_bytes()).is_some() != invert
+        {
+            buf.set_mark(n, true);
+            any = true;
         }
     }
-
-    if marked.is_empty() {
+    if !any {
         return Action::Error("no match".to_string());
     }
 
-    // Delete is special: remove marked lines bottom-to-top so
-    // earlier line numbers stay valid.
+    // A plain `d` deletes only the marked lines, so delete them bottom
+    // to top, where each removal is cheap.
     if cmd == "d" {
+        let marked: Vec<usize> = std::iter::from_fn(|| buf.take_mark()).collect();
         for &n in marked.iter().rev() {
             buf.delete_range(n, n);
         }
         return Action::Done;
     }
 
-    // For all other commands: set current to the marked line and
-    // dispatch normally. Works for p, n, s (which don't change
-    // line count) and anything else that operates on current line.
+    // Anything else runs once per marked line, with that line current.
+    // The first error stops the loop, as in ed.
     let mut output = String::new();
-    for &n in &marked {
+    while let Some(n) = buf.take_mark() {
         buf.set_current(n);
         match dispatch(cmd, buf) {
             Action::Print(msg) => {
@@ -442,13 +452,14 @@ fn run_global(spec: &Spec, buf: &mut Buffer, args: &str, invert: bool) -> Action
                 output.push_str(&msg);
             }
             Action::Error(msg) => {
-                if !output.is_empty() {
-                    output.push('\n');
-                }
-                output.push_str(&format!("? {msg}"));
+                buf.clear_marks();
+                return if output.is_empty() {
+                    Action::Error(msg)
+                } else {
+                    Action::PrintThenError(output, msg)
+                };
             }
-            Action::Done => {}
-            // Quit and EnterInputMode don't make sense inside g.
+            // Quit, edit and input mode don't make sense inside g.
             _ => {}
         }
     }
@@ -565,17 +576,9 @@ fn run_move(spec: &Spec, buf: &mut Buffer, dest_arg: &str) -> Action {
     if dest >= range.start && dest <= range.end {
         return Action::Error("invalid destination".to_string());
     }
-    let lines: Vec<String> = (range.start..=range.end)
-        .filter_map(|n| buf.line(n).map(str::to_string))
-        .collect();
-    let count = lines.len();
-    buf.delete_range(range.start, range.end);
-    // Deletion shifts everything past `range.end` down by `count`.
-    let adjusted = if dest > range.end { dest - count } else { dest };
-    for (at, line) in (adjusted..).zip(lines) {
-        buf.append_after(at, line);
-    }
-    buf.set_current(adjusted + count);
+    let count = range.end - range.start + 1;
+    let first = buf.move_range(range.start, range.end, dest);
+    buf.set_current(first + count - 1);
     Action::Print(format!(
         "moved {count} lines ({}-{}) to after {dest}",
         range.start, range.end
@@ -1308,6 +1311,56 @@ mod tests {
         let act = dispatch(&format!("e {}", path.to_str().unwrap()), &mut buf);
         assert!(matches!(act, Action::Print(ref s) if s.contains("new file")));
         assert!(buf.is_empty());
+    }
+
+    fn lines_of(buf: &Buffer) -> Vec<&str> {
+        (1..=buf.len()).filter_map(|n| buf.line(n)).collect()
+    }
+
+    #[test]
+    fn global_relative_delete_hits_the_lines_before_the_marked_ones() {
+        let mut buf = buf_with(&["x", "a1", "y", "a2"]);
+        dispatch("g/a/-1d", &mut buf);
+        assert_eq!(lines_of(&buf), ["a1", "a2"]);
+    }
+
+    #[test]
+    fn global_join_follows_its_marks_after_each_join() {
+        let mut buf = buf_with(&["a1", "b1", "a2", "b2"]);
+        dispatch("g/a/j", &mut buf);
+        assert_eq!(lines_of(&buf), ["a1b1", "a2b2"]);
+    }
+
+    #[test]
+    fn global_insert_above_a_mark_does_not_shift_it_onto_another_line() {
+        let mut buf = buf_with(&["a1", "a2"]);
+        dispatch("g/a/t0", &mut buf);
+        assert_eq!(lines_of(&buf), ["a2", "a1", "a1", "a2"]);
+    }
+
+    #[test]
+    fn global_stops_at_the_first_failing_command() {
+        let mut buf = buf_with(&["a1", "b", "a2"]);
+        let act = dispatch("g/a/-1d", &mut buf);
+        assert!(matches!(act, Action::Error(_)));
+        assert_eq!(lines_of(&buf), ["a1", "b", "a2"]);
+        assert_eq!(buf.take_mark(), None, "marks are cleared after an error");
+    }
+
+    #[test]
+    fn move_carries_a_marked_line_with_it() {
+        let mut buf = buf_with(&["a", "b", "c"]);
+        buf.set_mark(3, true);
+        dispatch("3m0", &mut buf);
+        assert_eq!(lines_of(&buf), ["c", "a", "b"]);
+        assert_eq!(buf.take_mark(), Some(1));
+    }
+
+    #[test]
+    fn global_reverses_a_file_with_move_to_zero() {
+        let mut buf = buf_with(&["1", "2", "3", "4"]);
+        dispatch("g/^/m0", &mut buf);
+        assert_eq!(lines_of(&buf), ["4", "3", "2", "1"]);
     }
 
     #[test]
