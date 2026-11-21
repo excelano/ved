@@ -712,7 +712,7 @@ enum LoadOutcome {
 }
 
 fn load_file(filename: &str, buf: &mut Buffer) -> Result<LoadOutcome, String> {
-    let detected = enc::warn_if_non_utf8(filename);
+    enc::warn_if_non_utf8(filename);
     let content = match std::fs::read_to_string(filename) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -729,9 +729,6 @@ fn load_file(filename: &str, buf: &mut Buffer) -> Result<LoadOutcome, String> {
     }
     buf.set_filename(filename.to_string());
     buf.mark_saved();
-    if let Some(enc) = detected {
-        buf.mark_non_utf8_source(enc, filename.to_string());
-    }
 
     Ok(LoadOutcome::Loaded(bytes))
 }
@@ -1036,15 +1033,6 @@ fn run_write(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
         filename_arg.to_string()
     };
 
-    // Refuse to overwrite a non-UTF-8 source: saving edits as UTF-8 would
-    // silently corrupt the original. The user can still `w <newname>` to a
-    // different file, or convert with iconv and reopen.
-    if let Some(enc) = buf.non_utf8_block(&filename) {
-        return Action::Error(format!(
-            "refusing to overwrite {filename} (loaded as {enc}); convert with iconv first, or use `w <newname>` to write elsewhere"
-        ));
-    }
-
     // Build the content. The one place we deviate from the normal
     // resolve flow: an empty buffer with no address spec is allowed
     // (it writes a 0-byte file). Anything else goes through the
@@ -1298,17 +1286,6 @@ mod tests {
     }
 
     #[test]
-    fn write_refuses_to_overwrite_a_non_utf8_source() {
-        let path = temp_path("write_non_utf8");
-        let mut buf = buf_with(&["x"]);
-        buf.set_filename(path.to_str().unwrap().to_string());
-        buf.mark_non_utf8_source("UTF-16".to_string(), path.to_str().unwrap().to_string());
-        let act = dispatch("w", &mut buf);
-        assert!(matches!(act, Action::Error(ref e) if e.contains("UTF-16")));
-        assert!(!path.exists());
-    }
-
-    #[test]
     fn write_of_a_partial_range_does_not_mark_the_buffer_saved() {
         // A fresh buffer starts modified (append_after sets it).
         // Writing only line 1 leaves the rest of the buffer
@@ -1509,6 +1486,18 @@ mod tests {
         let mut buf = buf_with(&["axb"]);
         assert!(matches!(dispatch("s.a\\..X.", &mut buf), Action::Error(_)));
         assert_eq!(buf.line(1), Some("axb"));
+    }
+
+    #[test]
+    fn a_utf8_file_with_the_utf7_marker_loads_and_saves_in_place() {
+        let path = temp_path("utf7_marker");
+        std::fs::write(&path, "see +ACI- here\n").unwrap();
+        let mut buf = Buffer::new();
+        load_file(path.to_str().unwrap(), &mut buf).unwrap();
+        dispatch("s/see/saw/", &mut buf);
+        assert!(matches!(dispatch("w", &mut buf), Action::Confirm(_)));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "saw +ACI- here\n");
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

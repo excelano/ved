@@ -34,12 +34,14 @@ impl fmt::Display for Encoding {
 const SCAN_WINDOW: usize = 4096;
 const UTF7_MARKER: &[u8] = b"+ACI-";
 
-/// Sniff the first 4 KiB of `path` for a non-UTF-8 signature. On detection,
-/// emit a two-line warning to stderr with a copy-pasteable iconv command and
-/// return the encoding display name (e.g. "UTF-7"). Sniff failures (missing
-/// file, IO error) and clean UTF-8 files return None silently.
-pub fn warn_if_non_utf8(path: &str) -> Option<String> {
-    let enc = sniff_path(path)?;
+/// Sniff the first 4 KiB of `path` for a non-UTF-8 signature and, on
+/// detection, write a two-line warning to stderr with a copy-pasteable
+/// iconv command. Sniff failures (missing file, IO error) and clean UTF-8
+/// files are silent.
+pub fn warn_if_non_utf8(path: &str) {
+    let Some(enc) = sniff_path(path) else {
+        return;
+    };
     eprintln!("warning: {path} appears to be {enc} encoded.");
     let from = match enc {
         Encoding::Utf7 => "UTF-7",
@@ -48,7 +50,6 @@ pub fn warn_if_non_utf8(path: &str) -> Option<String> {
     };
     let dst = utf8_sibling_path(Path::new(path));
     eprintln!("hint: iconv -f {from} -t UTF-8 {path} > {}", dst.display());
-    Some(enc.to_string())
 }
 
 fn sniff_path(path: &str) -> Option<Encoding> {
