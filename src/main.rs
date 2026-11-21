@@ -12,7 +12,7 @@ mod buffer;
 mod enc;
 
 use address::Spec;
-use buffer::Buffer;
+use buffer::{Buffer, Substitution};
 use std::env;
 use std::io::{self, BufRead, Write};
 use std::process::ExitCode;
@@ -603,16 +603,13 @@ fn run_transfer(spec: &Spec, buf: &mut Buffer, dest_arg: &str) -> Action {
     ))
 }
 
-/// Resolve `spec` against the buffer and emit the corresponding
-/// lines. With `numbered = true` each line is prefixed with its
-/// 1-indexed position and a tab, matching ed's `n` command. Updates
-/// the current line to the end of the printed range.
 enum PrintMode {
     Plain,
     Numbered,
     List,
 }
 
+/// Print the addressed lines in `mode` and make the last one current.
 fn run_print(spec: &Spec, buf: &mut Buffer, mode: PrintMode) -> Action {
     let range = match spec.resolve(buf) {
         Ok(r) => r,
@@ -624,20 +621,21 @@ fn run_print(spec: &Spec, buf: &mut Buffer, mode: PrintMode) -> Action {
         if n > range.start {
             output.push('\n');
         }
-        if matches!(mode, PrintMode::Numbered) {
-            output.push_str(&format!("{n}\t"));
-        }
         if let Some(line) = buf.line(n) {
-            if matches!(mode, PrintMode::List) {
-                output.push_str(&render_list_line(line));
-            } else {
-                output.push_str(line);
-            }
+            output.push_str(&format_line(n, line, &mode));
         }
     }
 
     buf.set_current(range.end);
     Action::Print(output)
+}
+
+fn format_line(n: usize, line: &str, mode: &PrintMode) -> String {
+    match mode {
+        PrintMode::Plain => line.to_string(),
+        PrintMode::Numbered => format!("{n}\t{line}"),
+        PrintMode::List => render_list_line(line),
+    }
 }
 
 /// Render a line for the `l` (list) command: each byte outside
@@ -779,9 +777,9 @@ fn run_read(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
 fn run_substitute(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
     let args = args.as_bytes();
 
-    let (pattern, replacement, global) = if args.is_empty() {
+    let (subst, mode) = if args.is_empty() {
         match buf.last_subst() {
-            Some((p, r, g)) => (p.clone(), r.clone(), *g),
+            Some(last) => (last.clone(), PrintMode::Plain),
             None => return Action::Error("no previous substitute".to_string()),
         }
     } else {
@@ -795,13 +793,21 @@ fn run_substitute(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
 
         let (replacement, rest) = scan_delimited(rest, delim).unwrap_or((rest, &[]));
 
-        let global = rest.contains(&b'g');
-        buf.set_last_subst(pattern.to_vec(), replacement.to_vec(), global);
-        (pattern.to_vec(), replacement.to_vec(), global)
+        let (nth, global, mode) = match parse_suffix(rest) {
+            Ok(s) => s,
+            Err(e) => return Action::Error(e),
+        };
+        let subst = Substitution {
+            pattern: pattern.to_vec(),
+            replacement: replacement.to_vec(),
+            nth,
+            global,
+        };
+        buf.set_last_subst(subst.clone());
+        (subst, mode)
     };
 
-    // Compile the pattern.
-    let re = bre::Regex::compile(&pattern);
+    let re = bre::Regex::compile(&subst.pattern);
 
     // Resolve the address range (default: current line).
     let range = match spec.resolve(buf) {
@@ -818,7 +824,7 @@ fn run_substitute(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
         };
         let line_bytes = line.as_bytes();
 
-        let new_line = substitute(&re, line_bytes, &replacement, 1, global);
+        let new_line = substitute(&re, line_bytes, &subst.replacement, subst.nth, subst.global);
 
         if let Some(new_bytes) = new_line {
             // Always valid UTF-8: `line_bytes` and `replacement` are
@@ -836,7 +842,7 @@ fn run_substitute(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
         Some(n) => {
             buf.set_current(n);
             match buf.line(n) {
-                Some(s) => Action::Print(s.to_string()),
+                Some(line) => Action::Print(format_line(n, line, &mode)),
                 None => Action::Error("invalid address".to_string()),
             }
         }
@@ -864,6 +870,41 @@ fn scan_delimited(input: &[u8], delim: u8) -> Option<(&[u8], &[u8])> {
         }
     }
     None
+}
+
+/// Parse what follows the replacement in `s/re/new/`: a count, `g`,
+/// and at most one of `p`, `l` and `n`, each at most once. A count and
+/// `g` together are an error, as in GNU ed; POSIX leaves them
+/// unspecified.
+fn parse_suffix(rest: &[u8]) -> Result<(usize, bool, PrintMode), String> {
+    let digits = rest.iter().take_while(|b| b.is_ascii_digit()).count();
+    let nth = if digits == 0 {
+        1
+    } else {
+        match std::str::from_utf8(&rest[..digits])
+            .ok()
+            .and_then(|d| d.parse().ok())
+        {
+            Some(n) if n > 0 => n,
+            _ => return Err("invalid count".to_string()),
+        }
+    };
+    let mut global = false;
+    let mut mode = None;
+    for &b in &rest[digits..] {
+        match b {
+            b'g' if !global && digits == 0 => global = true,
+            b'p' | b'l' | b'n' if mode.is_none() => {
+                mode = Some(match b {
+                    b'l' => PrintMode::List,
+                    b'n' => PrintMode::Numbered,
+                    _ => PrintMode::Plain,
+                })
+            }
+            _ => return Err(format!("unknown suffix: {}", String::from_utf8_lossy(rest))),
+        }
+    }
+    Ok((nth, global, mode.unwrap_or(PrintMode::Plain)))
 }
 
 /// Replace matches of `re` in `text`: the `nth` match (counting from 1),
@@ -1864,6 +1905,47 @@ mod tests {
         assert_eq!(buf.line(1), Some("ac"));
         let mut buf = buf_with(&["abc"]);
         assert!(matches!(dispatch("s/a", &mut buf), Action::Error(_)));
+    }
+
+    #[test]
+    fn substitute_count_replaces_only_that_match() {
+        for (cmd, want) in [("s/a/X/2", "aXa"), ("s/a/X/3", "aaX"), ("s/a/X/2p", "aXa")] {
+            let mut buf = buf_with(&["aaa"]);
+            assert!(matches!(dispatch(cmd, &mut buf), Action::Print(_)), "{cmd}");
+            assert_eq!(buf.line(1), Some(want), "{cmd}");
+        }
+        let mut buf = buf_with(&["aaa"]);
+        assert!(matches!(dispatch("s/a/X/4", &mut buf), Action::Error(_)));
+    }
+
+    #[test]
+    fn substitute_print_suffixes_choose_how_the_line_is_shown() {
+        let mut buf = buf_with(&["aaa"]);
+        assert!(matches!(dispatch("s/a/X/n", &mut buf), Action::Print(ref l) if l == "1\tXaa"));
+        let mut buf = buf_with(&["aaa"]);
+        assert!(matches!(dispatch("s/a/X/l", &mut buf), Action::Print(ref l) if l == "Xaa$"));
+        let mut buf = buf_with(&["aaa"]);
+        assert!(matches!(dispatch("s/a/X/gp", &mut buf), Action::Print(ref l) if l == "XXX"));
+    }
+
+    #[test]
+    fn substitute_rejects_suffixes_it_does_not_understand() {
+        for cmd in [
+            "s/a/X/z", "s/a/X/gq", "s/a/X/2g", "s/a/X/g2", "s/a/X/0", "s/a/X/pp", "s/a/X/ g",
+            "s/a/X/gg",
+        ] {
+            let mut buf = buf_with(&["aaa"]);
+            assert!(matches!(dispatch(cmd, &mut buf), Action::Error(_)), "{cmd}");
+            assert_eq!(buf.line(1), Some("aaa"), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn bare_s_repeats_the_count_too() {
+        let mut buf = buf_with(&["aaa", "aaa"]);
+        dispatch("1s/a/X/2", &mut buf);
+        dispatch("2s", &mut buf);
+        assert_eq!(buf.line(2), Some("aXa"));
     }
 
     #[test]
