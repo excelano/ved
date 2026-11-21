@@ -466,25 +466,31 @@ fn run_help() -> Action {
         "\
 ved commands (addresses shown in brackets are optional):
 
-  [.]a, append       Append text after the addressed line. End with '.'
-  [.]i, insert       Insert text before the addressed line. End with '.'
-  [.,.]c, change     Replace the addressed lines with new text. End with '.'
-  [.,.]d, delete     Delete the addressed lines
-  [.,.]p, print      Print the addressed lines
-  [.,.]n, number     Print with line numbers
-  [.,.]l, list       Print with non-printing chars as \\NNN octal, ending $
-  [.,.+1]j, join     Join the addressed lines into one (default: . and next)
-  [.,.]m DEST        Move the addressed lines to after DEST (0 = top)
-  [.,.]t DEST        Copy the addressed lines to after DEST (0 = top)
-  [.,.]s/re/new/[g]  Substitute: replace regex match in addressed lines
-  [.,.]s             Repeat the last substitute (pattern, replacement, flags)
-  [.,.]g/re/cmd      Global: run cmd on lines matching regex
-  [.,.]v/re/cmd      Inverse global: run cmd on lines NOT matching regex
-  [.,.]w [file]      Write addressed lines (default: all) to file
-  q, quit            Quit (warns if buffer modified, repeat to force)
-  H, help            Show this help
+  [.]a, append          Append text after the addressed line. End with '.'
+  [.]i, insert          Insert text before the addressed line. End with '.'
+  [.,.]c, change        Replace the addressed lines with new text. End with '.'
+  [.,.]d, delete        Delete the addressed lines
+  [.,.]p, print         Print the addressed lines
+  [.,.]n, number        Print with line numbers
+  [.,.]l, list          Print with non-printing chars as \\NNN octal, ending $
+  [.,.+1]j, join        Join the addressed lines into one (default: . and next)
+  [.,.]m DEST           Move the addressed lines to after DEST (0 = top)
+  [.,.]t DEST           Copy the addressed lines to after DEST (0 = top)
+  [.,.]s/re/new/[g]     Substitute: replace regex match in addressed lines
+  [.,.]s                Repeat the last substitute (pattern, replacement, flags)
+  [1,$]g/re/cmd         Global: run cmd on lines matching regex
+  [1,$]v/re/cmd         Inverse global: run cmd on lines NOT matching regex
+  [1,$]w, write [file]  Write the addressed lines to file
+  [1,$]wq [file]        Write, then quit
+  [$]r, read [file]     Read file in after the addressed line
+  e, edit [file]        Replace the buffer with file (warns if buffer modified)
+  E [file]              Replace the buffer with file, discarding changes
+  q, quit               Quit (warns if buffer modified, repeat to force)
+  Q                     Quit, discarding changes
+  H, help               Show this help
 
-Addresses: 1 (line 1), $ (last), . (current), +N/-N (relative), , (all), ; (current to end)
+Addresses: 1 (line 1), $ (last), . (current), +N/-N (relative), , (all), ; (current to end),
+           /re/ (next matching line), ?re? (previous matching line)
 Regex: . (any char), * (zero or more), ^ $ (anchors), [abc] [^abc] [a-z] (classes)
        \\(...\\) (capture group), \\1-\\9 (backreference)
 Replacement: & (whole match), \\1-\\9 (group), \\& (literal &)"
@@ -1538,6 +1544,24 @@ mod tests {
         let mut buf = buf_with(&["a"]);
         let act = dispatch("H", &mut buf);
         assert!(matches!(act, Action::Print(ref s) if s.contains("ved commands")));
+    }
+
+    #[test]
+    fn help_mentions_every_command_the_dispatcher_accepts() {
+        let Action::Print(help) = run_help() else {
+            panic!("help should print");
+        };
+        for cmd in [
+            "a", "i", "c", "d", "p", "n", "l", "j", "m", "t", "s", "g", "v", "w", "wq", "r", "e",
+            "E", "q", "Q", "H",
+        ] {
+            let listed = help.lines().any(|l| {
+                l.trim_start()
+                    .trim_start_matches(|c| "[.,+1$]".contains(c))
+                    .starts_with(cmd)
+            });
+            assert!(listed, "help does not list {cmd}");
+        }
     }
 
     #[test]
