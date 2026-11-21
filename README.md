@@ -36,15 +36,17 @@ winget install Excelano.ved
 
 ### Cargo
 
-If you have a Rust toolchain, install the latest release from [crates.io](https://crates.io/crates/ved):
+On macOS, or anywhere with a Rust toolchain, install the latest release from [crates.io](https://crates.io/crates/ved), and run the same command again to upgrade:
 
 ```sh
 cargo install ved
 ```
 
+There is no Homebrew formula and no macOS download. If you installed ved from the `excelano/tap` Homebrew tap, it will not be upgraded; remove it with `brew uninstall ved` and `brew untap excelano/tap`, then install with Cargo.
+
 ### Build from source
 
-ved requires only a Rust toolchain recent enough for the edition `Cargo.toml` names. No external crates, no C dependencies, no runtime.
+ved requires only a Rust toolchain at least as new as the `rust-version` in `Cargo.toml`. No external crates, no C dependencies, no runtime.
 
 ```sh
 cd ved
@@ -69,20 +71,24 @@ The `--` separates cargo's flags from ved's. `-p '* '` sets the command prompt (
 
 ## Quick start
 
+A session with the prompt set to `* `, on a two-line file:
+
 ```
-$ ved myfile.txt           # open a file
-135                        # ved prints the byte count
-* ,p                      # print all lines
+$ ved -p '* ' myfile.txt
+32
+* ,p
 Hello world
 This is a test file
-* 1s/Hello/Goodbye/       # substitute on line 1
+* 1s/Hello/Goodbye/
 Goodbye world
-* g/test/n                # print lines matching "test" with numbers
+* g/test/n
 2	This is a test file
-* w                        # write back to the file
-37
-* q                        # quit
+* w
+wrote 34 bytes to myfile.txt
+* q
 ```
+
+ved prints the file's size when it opens it, confirms each change, and says how many bytes it wrote. With `-s`, it prints only what the commands ask for, as `ed -s` does.
 
 ## Commands
 
@@ -100,11 +106,13 @@ Goodbye world
 | `[.,.]t DEST` | | Copy the addressed lines to after DEST (0 = top) |
 | `[.,.]s/re/new/[g]` | | Substitute: replace regex matches in addressed lines |
 | `[.,.]s` | | Repeat the last substitute (pattern, replacement, flags) |
-| `[.,.]g/re/cmd` | | Global: run a command on every line matching a regex |
-| `[.,.]v/re/cmd` | | Inverse global: run a command on lines NOT matching |
-| `[.,.]w [file]` | | Write the addressed lines (default: all) to a file |
-| `e [file]` | | Edit: replace the buffer with a file's contents |
-| `r [file]` | | Read: append a file's contents after the addressed line |
+| `[1,$]g/re/cmd` | | Global: run a command on every line matching a regex |
+| `[1,$]v/re/cmd` | | Inverse global: run a command on lines NOT matching |
+| `[1,$]w [file]` | `write` | Write the addressed lines to a file |
+| `[1,$]wq [file]` | | Write, then quit |
+| `e [file]` | `edit` | Edit: replace the buffer with a file's contents (warns on unsaved changes; repeat to force) |
+| `E [file]` | | Edit, discarding unsaved changes |
+| `[$]r [file]` | `read` | Read: append a file's contents after the addressed line |
 | `q` | `quit` | Quit (warns on unsaved changes; repeat to force) |
 | `Q` | | Quit unconditionally |
 | `H` | `help` | Print the command reference |
@@ -175,8 +183,8 @@ Pure-stdlib Rust, one module per concern. Zero dependencies, no external crates,
 
 These limitations are inherited from ed and intentional, since changing them would make ved not-an-ed-clone:
 
-- **Newline-only record model.** Lines are delimited by `\n` (or `\r\n`). The ASCII information separators (RS, GS, FS, US) used in some text formats as record separators do *not* create addressable lines — a file using RS to separate records but no newlines loads as a single ved line. Use `l` to make embedded separators visible within a line.
-- **UTF-8 only.** Files are read via `std::fs::read_to_string`, which rejects invalid UTF-8. ved is a text editor, not a binary editor. UTF-8 text with multi-byte characters works; arbitrary binary does not. If a file looks like UTF-7 (the `+ACI-` escape from Scoutbook exports) or carries a UTF-16 BOM, ved prints a warning at startup with the `iconv` command needed to convert it, and `w` refuses to overwrite the original (saving edits as UTF-8 would silently corrupt the source). `w <newname>` to a different file still works as an escape valve.
+- **Newline-only record model.** Lines are delimited by `\n`. A `\r` before the `\n` is the last character of the line, as in ed, so a file with CRLF endings is written back with them, and `l` shows the `\r` as `\015`. The ASCII information separators (RS, GS, FS, US) used in some text formats as record separators do *not* create addressable lines — a file using RS to separate records but no newlines loads as a single ved line. Use `l` to make embedded separators visible within a line.
+- **UTF-8 only.** Files are read via `std::fs::read_to_string`, which rejects invalid UTF-8. ved is a text editor, not a binary editor. UTF-8 text with multi-byte characters works; arbitrary binary does not. If a file carries a UTF-16 BOM or looks like UTF-7 (the `+ACI-` escape from Scoutbook exports), ved prints a warning with the `iconv` command needed to convert it. A UTF-16 file does not load. A file with the UTF-7 marker is valid UTF-8 and loads and saves as it is, because ved cannot tell a UTF-7 export from UTF-8 text that happens to contain `+ACI-`.
 
 ## License
 

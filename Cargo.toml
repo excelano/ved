@@ -3,6 +3,7 @@ name = "ved"
 homepage = "https://excelano.com/ved/"
 version = "0.3.0"
 edition = "2024"
+rust-version = "1.88"
 description = "The verbose ed — an ed clone with friendly errors and a built-in help system"
 license = "MIT"
 authors = ["David M. Anderson"]

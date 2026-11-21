@@ -10,3 +10,8 @@ on:
 jobs:
   ci:
     uses: excelano/.github/.github/workflows/rust-ci.yml@main
+
+  msrv:
+    uses: excelano/.github/.github/workflows/rust-ci.yml@main
+    with:
+      toolchain: "1.88"

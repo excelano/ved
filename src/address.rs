@@ -107,6 +107,23 @@ impl Spec {
     /// Resolve with the whole buffer (`1,$`) as the default for an
     /// omitted spec. Used by `w` — typing `w foo.txt` with no
     /// address writes the entire buffer, not just the current line.
+    /// The line `a` appends after and `i` inserts before: the last
+    /// address given, or the current line. 0 is allowed, meaning before
+    /// the first line, and so is an empty buffer, whose current line is 0.
+    pub fn resolve_target(&self, buf: &Buffer) -> Result<usize, String> {
+        let (first, last) = match (&self.start, &self.end) {
+            (None, None) => return Ok(buf.current()),
+            (Some(s), None) => (s, s),
+            (Some(s), Some(e)) => (s, e),
+            (None, Some(_)) => unreachable!("parser never produces (None, Some)"),
+        };
+        let (first, last) = (resolve_one(first, buf)?, resolve_one(last, buf)?);
+        if first > buf.len() || last > buf.len() {
+            return Err("invalid address".to_string());
+        }
+        Ok(last)
+    }
+
     pub fn resolve_or_whole(&self, buf: &Buffer) -> Result<Range, String> {
         self.resolve_with(buf, (Address::Number(1), Address::Last))
     }
@@ -204,10 +221,10 @@ fn parse_one(input: &str) -> Result<(Option<Address>, &str), String> {
 }
 
 /// Scan a `delim`-terminated search pattern starting right after the
-/// opening delimiter. Handles backslash escapes the same way
-/// `scan_delimited` in main.rs does for substitute patterns: an
-/// escaped delimiter becomes a literal delimiter, other escapes pass
-/// through unchanged for the regex engine to interpret.
+/// opening delimiter. An escaped delimiter becomes a literal
+/// delimiter, which is safe because the only search delimiters, `/`
+/// and `?`, mean nothing to a BRE; other escapes pass through
+/// unchanged for the regex engine to interpret.
 ///
 /// The closing delimiter may be omitted if the pattern runs to the
 /// end of the line (`/foo` with no trailing `/`), matching ed: the

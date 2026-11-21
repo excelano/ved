@@ -12,7 +12,7 @@ mod buffer;
 mod enc;
 
 use address::Spec;
-use buffer::Buffer;
+use buffer::{Buffer, Substitution};
 use std::env;
 use std::io::{self, BufRead, Write};
 use std::process::ExitCode;
@@ -20,7 +20,7 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
 
-    let (prompt, filename) = match parse_args(&args) {
+    let options = match parse_args(&args) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("ved: {e}");
@@ -29,14 +29,19 @@ fn main() -> ExitCode {
         }
     };
 
-    run_repl(prompt.as_deref(), filename.as_deref())
+    run_repl(&options)
 }
 
-/// Parse command line arguments.
-/// Returns (prompt, filename) on success.
-fn parse_args(args: &[String]) -> Result<(Option<String>, Option<String>), String> {
+struct Options {
+    prompt: Option<String>,
+    filename: Option<String>,
+    silent: bool,
+}
+
+fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut prompt: Option<String> = None;
     let mut filename: Option<String> = None;
+    let mut silent = false;
     let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
@@ -51,6 +56,7 @@ fn parse_args(args: &[String]) -> Result<(Option<String>, Option<String>), Strin
             s if s.starts_with("--prompt=") => {
                 prompt = Some(s["--prompt=".len()..].to_string());
             }
+            "-s" | "--script" => silent = true,
             "-h" | "--help" => {
                 print_usage();
                 std::process::exit(0);
@@ -68,7 +74,11 @@ fn parse_args(args: &[String]) -> Result<(Option<String>, Option<String>), Strin
         }
         i += 1;
     }
-    Ok((prompt, filename))
+    Ok(Options {
+        prompt,
+        filename,
+        silent,
+    })
 }
 
 fn print_usage() {
@@ -78,6 +88,9 @@ fn print_usage() {
     println!();
     println!("Options:");
     println!("  -p, --prompt <STRING>   Set the command prompt");
+    println!(
+        "  -s, --script            Print only what commands ask for: no byte counts or confirmations"
+    );
     println!("  -h, --help              Show this help message and exit");
     println!("  -V, --version           Show version information and exit");
 }
@@ -90,7 +103,10 @@ fn print_usage() {
 /// parsed by `dispatch` and the resulting `Action` is applied. In
 /// *input mode* (entered by `a`) every input line goes verbatim
 /// into the buffer until the user types a single `.` on a line.
-fn run_repl(prompt: Option<&str>, filename: Option<&str>) -> ExitCode {
+fn run_repl(options: &Options) -> ExitCode {
+    let prompt = options.prompt.as_deref();
+    let filename = options.filename.as_deref();
+    let silent = options.silent;
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -98,22 +114,32 @@ fn run_repl(prompt: Option<&str>, filename: Option<&str>) -> ExitCode {
     let mut line = String::new();
     let mut buffer = Buffer::new();
     let mut input_mode = false;
-    // ed's "unsaved changes" guard. The first `q` on a modified
-    // buffer flips this on and prints a warning instead of quitting.
-    // Any other command in between resets it.
-    let mut quit_warned = false;
+    // ed's "unsaved changes" guard. The first `q` or `e` on a modified
+    // buffer flips this on and prints a warning instead of acting. A
+    // second `q` or `e` straight after it goes ahead; any other command
+    // in between resets it.
+    let mut modified_warned = false;
+    let mut had_error = false;
+    let exit = |had_error: bool| {
+        if had_error {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        }
+    };
 
     // If a filename was given on the command line, load it.
     if let Some(f) = filename {
         match load_file(f, &mut buffer) {
             Ok(LoadOutcome::Loaded(bytes)) => {
-                let _ = writeln!(out, "{bytes}");
+                emit(&mut out, &Action::Confirm(format!("{bytes}")), silent);
             }
             Ok(LoadOutcome::NewFile) => {
-                let _ = writeln!(out, "{f}: new file");
+                emit(&mut out, &Action::Confirm(format!("{f}: new file")), silent);
             }
             Err(e) => {
                 let _ = writeln!(out, "? {e}");
+                had_error = true;
             }
         }
     }
@@ -130,7 +156,16 @@ fn run_repl(prompt: Option<&str>, filename: Option<&str>) -> ExitCode {
 
         line.clear();
         match reader.read_line(&mut line) {
-            Ok(0) => return ExitCode::SUCCESS, // EOF
+            Ok(0) => {
+                input_mode = false;
+                if buffer.is_modified() && !modified_warned {
+                    let _ = writeln!(out, "? warning: buffer modified");
+                    modified_warned = true;
+                    had_error = true;
+                    continue;
+                }
+                return exit(had_error);
+            }
             Ok(_) => {}
             Err(e) => {
                 eprintln!("ved: read error: {e}");
@@ -152,35 +187,42 @@ fn run_repl(prompt: Option<&str>, filename: Option<&str>) -> ExitCode {
             continue;
         }
 
-        match dispatch(trimmed, &mut buffer) {
+        let action = match dispatch(trimmed, &mut buffer) {
+            Action::EditModified(args) if modified_warned => run_edit(&mut buffer, &args),
+            other => other,
+        };
+        match action {
+            Action::EditModified(_) => {
+                let _ = writeln!(out, "? warning: buffer modified");
+                modified_warned = true;
+                had_error = true;
+            }
             Action::Quit => {
-                if buffer.is_modified() && !quit_warned {
+                if buffer.is_modified() && !modified_warned {
                     let _ = writeln!(out, "? warning: buffer modified");
-                    quit_warned = true;
+                    modified_warned = true;
+                    had_error = true;
                 } else {
-                    return ExitCode::SUCCESS;
+                    return exit(had_error);
                 }
             }
             Action::ForceQuit => {
-                return ExitCode::SUCCESS;
+                return exit(had_error);
+            }
+            Action::ConfirmAndQuit(msg) => {
+                emit(&mut out, &Action::Confirm(msg), silent);
+                return exit(had_error);
             }
             Action::EnterInputMode => {
                 input_mode = true;
-                quit_warned = false;
+                modified_warned = false;
             }
             Action::Done => {
-                quit_warned = false;
+                modified_warned = false;
             }
-            Action::Print(msg) => {
-                let _ = writeln!(out, "{msg}");
-                quit_warned = false;
-            }
-            Action::Error(msg) => {
-                // ved's friendly-error format. Slice 9 will route
-                // every error path through this variant and may add
-                // an H toggle to suppress the message like real ed.
-                let _ = writeln!(out, "? {msg}");
-                quit_warned = false;
+            output => {
+                had_error |= emit(&mut out, &output, silent);
+                modified_warned = false;
             }
         }
     }
@@ -190,10 +232,44 @@ fn run_repl(prompt: Option<&str>, filename: Option<&str>) -> ExitCode {
 enum Action {
     Quit,
     ForceQuit,
+    ConfirmAndQuit(String),
+    /// The results of the commands `g` ran, in order.
+    Batch(Vec<Action>),
+    /// `e` on a modified buffer, carrying its argument. The loop
+    /// warns the first time and runs the edit the second.
+    EditModified(String),
     EnterInputMode,
     Done,
+    /// Output the user asked for, such as the lines `p` prints.
     Print(String),
+    /// What ved says about a command it carried out, such as a byte
+    /// count. `-s` suppresses these.
+    Confirm(String),
     Error(String),
+}
+
+/// Write an output action and return whether it reported an error.
+fn emit(out: &mut impl Write, action: &Action, silent: bool) -> bool {
+    match action {
+        Action::Print(msg) => {
+            let _ = writeln!(out, "{msg}");
+            false
+        }
+        Action::Confirm(msg) => {
+            if !silent {
+                let _ = writeln!(out, "{msg}");
+            }
+            false
+        }
+        Action::Error(msg) => {
+            let _ = writeln!(out, "? {msg}");
+            true
+        }
+        Action::Batch(actions) => actions
+            .iter()
+            .fold(false, |err, a| emit(out, a, silent) | err),
+        _ => false,
+    }
 }
 
 /// Dispatch a single command line.
@@ -240,28 +316,19 @@ fn dispatch(cmd: &str, buf: &mut Buffer) -> Action {
     match rest {
         "q" | "quit" => return Action::Quit,
         "a" | "append" => {
-            // Append after the addressed line (default: current).
-            // On an empty buffer, current is 0 and append_after(0)
-            // inserts at the start — correct.
-            if !buf.is_empty()
-                && let Ok(r) = spec.resolve(buf)
-            {
-                buf.set_current(r.end);
+            match spec.resolve_target(buf) {
+                Ok(n) => buf.set_current(n),
+                Err(e) => return Action::Error(e),
             }
             return Action::EnterInputMode;
         }
         "i" | "insert" => {
-            // Insert before the addressed line (default: current).
-            // Implemented as "append after address - 1", so the
-            // input-mode loop (which always does append_after) works
-            // unchanged. On an empty buffer or address 1, current
-            // becomes 0 (the before-first-line sentinel).
-            if !buf.is_empty() {
-                let addr = match spec.resolve(buf) {
-                    Ok(r) => r.end,
-                    Err(e) => return Action::Error(e),
-                };
-                buf.set_current(addr.saturating_sub(1));
+            // Insert before the target is append after the line above
+            // it, so the input-mode loop always appends. 0i and 1i
+            // both insert at the top, as in ed.
+            match spec.resolve_target(buf) {
+                Ok(n) => buf.set_current(n.saturating_sub(1)),
+                Err(e) => return Action::Error(e),
             }
             return Action::EnterInputMode;
         }
@@ -294,23 +361,59 @@ fn dispatch(cmd: &str, buf: &mut Buffer) -> Action {
     // a character and pass the rest as the argument string. Splitting
     // with the iterator rather than a byte offset keeps a multi-byte
     // first character from slicing `rest` off a char boundary.
-    let mut chars = rest.chars();
-    let first = match chars.next() {
-        Some(c) => c,
+    let (first, args) = match split_command(rest) {
+        Some(parts) => parts,
         None => return Action::Error(format!("unknown command: {rest}")),
     };
-    let args = chars.as_str();
     match first {
-        'e' => run_edit(buf, args),
+        'e' if buf.is_modified() => Action::EditModified(args.to_string()),
+        'e' | 'E' => run_edit(buf, args),
         'r' => run_read(&spec, buf, args),
         'g' => run_global(&spec, buf, args, false),
         'v' => run_global(&spec, buf, args, true),
         's' => run_substitute(&spec, buf, args),
-        'w' => run_write(&spec, buf, args),
+        'w' => match args.strip_prefix('q') {
+            Some(file) if file.is_empty() || file.starts_with(char::is_whitespace) => {
+                match run_write(&spec, buf, file) {
+                    Action::Confirm(msg) => Action::ConfirmAndQuit(msg),
+                    other => other,
+                }
+            }
+            _ => run_write(&spec, buf, args),
+        },
         'm' => run_move(&spec, buf, args),
         't' => run_transfer(&spec, buf, args),
         _ => Action::Error(format!("unknown command: {rest}")),
     }
+}
+
+/// Split a stage-two command into its letter and its argument string.
+///
+/// `e`, `r` and `w` take a filename, so the letter must be followed by
+/// whitespace or the end of the line: `wfoo` is an error, as in ed, and
+/// cannot write to a file named `foo`. That rule is what makes the long
+/// forms `edit`, `read` and `write` unambiguous. `wq` is the one
+/// exception, handled in the `w` arm.
+fn split_command(rest: &str) -> Option<(char, &str)> {
+    for (long, letter) in [("edit", 'e'), ("read", 'r'), ("write", 'w')] {
+        if let Some(args) = rest.strip_prefix(long)
+            && (args.is_empty() || args.starts_with(char::is_whitespace))
+        {
+            return Some((letter, args));
+        }
+    }
+    let mut chars = rest.chars();
+    let first = chars.next()?;
+    let args = chars.as_str();
+    let takes_filename = matches!(first, 'e' | 'E' | 'r' | 'w');
+    let is_wq = first == 'w'
+        && args
+            .strip_prefix('q')
+            .is_some_and(|f| f.is_empty() || f.starts_with(char::is_whitespace));
+    if takes_filename && !is_wq && !(args.is_empty() || args.starts_with(char::is_whitespace)) {
+        return None;
+    }
+    Some((first, args))
 }
 
 /// Global command: scan the addressed range for lines matching
@@ -329,6 +432,9 @@ fn run_global(spec: &Spec, buf: &mut Buffer, args: &str, invert: bool) -> Action
     }
 
     let delim = args_bytes[0];
+    if !valid_delimiter(delim) {
+        return Action::Error("invalid delimiter".to_string());
+    }
     let after_delim = &args_bytes[1..];
 
     // Parse pattern: read until unescaped delimiter.
@@ -343,7 +449,7 @@ fn run_global(spec: &Spec, buf: &mut Buffer, args: &str, invert: bool) -> Action
     let cmd = if cmd.is_empty() { "p" } else { cmd };
 
     // Compile the regex.
-    let re = bre::Regex::compile(&pattern);
+    let re = bre::Regex::compile(pattern);
 
     // Resolve the address range (default: whole buffer).
     let range = match spec.resolve_or_whole(buf) {
@@ -351,59 +457,59 @@ fn run_global(spec: &Spec, buf: &mut Buffer, args: &str, invert: bool) -> Action
         Err(e) => return Action::Error(e),
     };
 
-    // Scan and mark matching lines.
-    let mut marked = Vec::new();
+    // Mark every matching line, then visit the marks. A mark belongs to
+    // its line, so a command that inserts, deletes or moves lines
+    // leaves the remaining marks on the lines they were set on.
+    buf.clear_marks();
+    let mut any = false;
     for n in range.start..=range.end {
-        if let Some(line) = buf.line(n) {
-            let matched = re.find(line.as_bytes()).is_some();
-            if matched != invert {
-                marked.push(n);
-            }
+        if let Some(line) = buf.line(n)
+            && re.find(line.as_bytes()).is_some() != invert
+        {
+            buf.set_mark(n, true);
+            any = true;
         }
     }
-
-    if marked.is_empty() {
+    if !any {
         return Action::Error("no match".to_string());
     }
 
-    // Delete is special: remove marked lines bottom-to-top so
-    // earlier line numbers stay valid.
+    // A plain `d` deletes only the marked lines, so delete them bottom
+    // to top, where each removal is cheap.
     if cmd == "d" {
+        let marked: Vec<usize> = std::iter::from_fn(|| buf.take_mark()).collect();
         for &n in marked.iter().rev() {
             buf.delete_range(n, n);
+        }
+        if let Some(&last) = marked.last() {
+            let after_last = last + 1 - marked.len();
+            buf.set_current(after_last.min(buf.len()));
         }
         return Action::Done;
     }
 
-    // For all other commands: set current to the marked line and
-    // dispatch normally. Works for p, n, s (which don't change
-    // line count) and anything else that operates on current line.
-    let mut output = String::new();
-    for &n in &marked {
+    // Anything else runs once per marked line, with that line current.
+    // The first error stops the loop, as in ed.
+    let mut results = Vec::new();
+    while let Some(n) = buf.take_mark() {
         buf.set_current(n);
         match dispatch(cmd, buf) {
-            Action::Print(msg) => {
-                if !output.is_empty() {
-                    output.push('\n');
-                }
-                output.push_str(&msg);
-            }
             Action::Error(msg) => {
-                if !output.is_empty() {
-                    output.push('\n');
-                }
-                output.push_str(&format!("? {msg}"));
+                buf.clear_marks();
+                results.push(Action::Error(msg));
+                break;
             }
-            Action::Done => {}
-            // Quit and EnterInputMode don't make sense inside g.
+            result @ (Action::Print(_) | Action::Confirm(_) | Action::Batch(_)) => {
+                results.push(result)
+            }
             _ => {}
         }
     }
 
-    if output.is_empty() {
-        Action::Done
-    } else {
-        Action::Print(output)
+    match results.len() {
+        0 => Action::Done,
+        1 => results.pop().unwrap(),
+        _ => Action::Batch(results),
     }
 }
 
@@ -413,25 +519,31 @@ fn run_help() -> Action {
         "\
 ved commands (addresses shown in brackets are optional):
 
-  [.]a, append       Append text after the addressed line. End with '.'
-  [.]i, insert       Insert text before the addressed line. End with '.'
-  [.,.]c, change     Replace the addressed lines with new text. End with '.'
-  [.,.]d, delete     Delete the addressed lines
-  [.,.]p, print      Print the addressed lines
-  [.,.]n, number     Print with line numbers
-  [.,.]l, list       Print with non-printing chars as \\NNN octal, ending $
-  [.,.+1]j, join     Join the addressed lines into one (default: . and next)
-  [.,.]m DEST        Move the addressed lines to after DEST (0 = top)
-  [.,.]t DEST        Copy the addressed lines to after DEST (0 = top)
-  [.,.]s/re/new/[g]  Substitute: replace regex match in addressed lines
-  [.,.]s             Repeat the last substitute (pattern, replacement, flags)
-  [.,.]g/re/cmd      Global: run cmd on lines matching regex
-  [.,.]v/re/cmd      Inverse global: run cmd on lines NOT matching regex
-  [.,.]w [file]      Write addressed lines (default: all) to file
-  q, quit            Quit (warns if buffer modified, repeat to force)
-  H, help            Show this help
+  [.]a, append          Append text after the addressed line. End with '.'
+  [.]i, insert          Insert text before the addressed line. End with '.'
+  [.,.]c, change        Replace the addressed lines with new text. End with '.'
+  [.,.]d, delete        Delete the addressed lines
+  [.,.]p, print         Print the addressed lines
+  [.,.]n, number        Print with line numbers
+  [.,.]l, list          Print with non-printing chars as \\NNN octal, ending $
+  [.,.+1]j, join        Join the addressed lines into one (default: . and next)
+  [.,.]m DEST           Move the addressed lines to after DEST (0 = top)
+  [.,.]t DEST           Copy the addressed lines to after DEST (0 = top)
+  [.,.]s/re/new/[g]     Substitute: replace regex match in addressed lines
+  [.,.]s                Repeat the last substitute (pattern, replacement, flags)
+  [1,$]g/re/cmd         Global: run cmd on lines matching regex
+  [1,$]v/re/cmd         Inverse global: run cmd on lines NOT matching regex
+  [1,$]w, write [file]  Write the addressed lines to file
+  [1,$]wq [file]        Write, then quit
+  [$]r, read [file]     Read file in after the addressed line
+  e, edit [file]        Replace the buffer with file (warns if buffer modified)
+  E [file]              Replace the buffer with file, discarding changes
+  q, quit               Quit (warns if buffer modified, repeat to force)
+  Q                     Quit, discarding changes
+  H, help               Show this help
 
-Addresses: 1 (line 1), $ (last), . (current), +N/-N (relative), , (all), ; (current to end)
+Addresses: 1 (line 1), $ (last), . (current), +N/-N (relative), , (all), ; (current to end),
+           /re/ (next matching line), ?re? (previous matching line)
 Regex: . (any char), * (zero or more), ^ $ (anchors), [abc] [^abc] [a-z] (classes)
        \\(...\\) (capture group), \\1-\\9 (backreference)
 Replacement: & (whole match), \\1-\\9 (group), \\& (literal &)"
@@ -450,9 +562,9 @@ fn run_delete(spec: &Spec, buf: &mut Buffer) -> Action {
     let count = range.end - range.start + 1;
     buf.delete_range(range.start, range.end);
     if count == 1 {
-        Action::Print(format!("deleted line {}", range.start))
+        Action::Confirm(format!("deleted line {}", range.start))
     } else {
-        Action::Print(format!(
+        Action::Confirm(format!(
             "deleted {count} lines ({}-{})",
             range.start, range.end
         ))
@@ -462,7 +574,7 @@ fn run_delete(spec: &Spec, buf: &mut Buffer) -> Action {
 /// Join the addressed lines into a single line at the start of the
 /// range. Default address is `.,.+1` — bare `j` joins the current
 /// line with the next, matching ed. A single-line range is a silent
-/// no-op (still sets current). The joined line is the literal
+/// no-op that leaves the current line alone. The joined line is the literal
 /// concatenation: ed does not insert separators.
 fn run_join(spec: &Spec, buf: &mut Buffer) -> Action {
     let range = match spec.resolve_or_pair_with_next(buf) {
@@ -470,8 +582,7 @@ fn run_join(spec: &Spec, buf: &mut Buffer) -> Action {
         Err(e) => return Action::Error(e),
     };
     if range.start == range.end {
-        buf.set_current(range.start);
-        return Action::Print(String::new());
+        return Action::Done;
     }
     let mut joined = String::new();
     for n in range.start..=range.end {
@@ -483,7 +594,7 @@ fn run_join(spec: &Spec, buf: &mut Buffer) -> Action {
     buf.delete_range(range.start + 1, range.end);
     buf.set_current(range.start);
     let count = range.end - range.start + 1;
-    Action::Print(format!(
+    Action::Confirm(format!(
         "joined {count} lines ({}-{}) into line {}",
         range.start, range.end, range.start
     ))
@@ -506,18 +617,10 @@ fn run_move(spec: &Spec, buf: &mut Buffer, dest_arg: &str) -> Action {
     if dest >= range.start && dest <= range.end {
         return Action::Error("invalid destination".to_string());
     }
-    let lines: Vec<String> = (range.start..=range.end)
-        .filter_map(|n| buf.line(n).map(str::to_string))
-        .collect();
-    let count = lines.len();
-    buf.delete_range(range.start, range.end);
-    // Deletion shifts everything past `range.end` down by `count`.
-    let adjusted = if dest > range.end { dest - count } else { dest };
-    for (at, line) in (adjusted..).zip(lines) {
-        buf.append_after(at, line);
-    }
-    buf.set_current(adjusted + count);
-    Action::Print(format!(
+    let count = range.end - range.start + 1;
+    let first = buf.move_range(range.start, range.end, dest);
+    buf.set_current(first + count - 1);
+    Action::Confirm(format!(
         "moved {count} lines ({}-{}) to after {dest}",
         range.start, range.end
     ))
@@ -544,22 +647,19 @@ fn run_transfer(spec: &Spec, buf: &mut Buffer, dest_arg: &str) -> Action {
         buf.append_after(at, line);
     }
     buf.set_current(dest + count);
-    Action::Print(format!(
+    Action::Confirm(format!(
         "copied {count} lines ({}-{}) to after {dest}",
         range.start, range.end
     ))
 }
 
-/// Resolve `spec` against the buffer and emit the corresponding
-/// lines. With `numbered = true` each line is prefixed with its
-/// 1-indexed position and a tab, matching ed's `n` command. Updates
-/// the current line to the end of the printed range.
 enum PrintMode {
     Plain,
     Numbered,
     List,
 }
 
+/// Print the addressed lines in `mode` and make the last one current.
 fn run_print(spec: &Spec, buf: &mut Buffer, mode: PrintMode) -> Action {
     let range = match spec.resolve(buf) {
         Ok(r) => r,
@@ -571,20 +671,21 @@ fn run_print(spec: &Spec, buf: &mut Buffer, mode: PrintMode) -> Action {
         if n > range.start {
             output.push('\n');
         }
-        if matches!(mode, PrintMode::Numbered) {
-            output.push_str(&format!("{n}\t"));
-        }
         if let Some(line) = buf.line(n) {
-            if matches!(mode, PrintMode::List) {
-                output.push_str(&render_list_line(line));
-            } else {
-                output.push_str(line);
-            }
+            output.push_str(&format_line(n, line, &mode));
         }
     }
 
     buf.set_current(range.end);
     Action::Print(output)
+}
+
+fn format_line(n: usize, line: &str, mode: &PrintMode) -> String {
+    match mode {
+        PrintMode::Plain => line.to_string(),
+        PrintMode::Numbered => format!("{n}\t{line}"),
+        PrintMode::List => render_list_line(line),
+    }
 }
 
 /// Render a line for the `l` (list) command: each byte outside
@@ -617,7 +718,7 @@ enum LoadOutcome {
 }
 
 fn load_file(filename: &str, buf: &mut Buffer) -> Result<LoadOutcome, String> {
-    let detected = enc::warn_if_non_utf8(filename);
+    enc::warn_if_non_utf8(filename);
     let content = match std::fs::read_to_string(filename) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -629,20 +730,26 @@ fn load_file(filename: &str, buf: &mut Buffer) -> Result<LoadOutcome, String> {
     };
     let bytes = content.len();
 
-    for line in content.lines() {
+    for line in split_lines(&content) {
         buf.append_after(buf.len(), line.to_string());
     }
     buf.set_filename(filename.to_string());
     buf.mark_saved();
-    if let Some(enc) = detected {
-        buf.mark_non_utf8_source(enc, filename.to_string());
-    }
 
     Ok(LoadOutcome::Loaded(bytes))
 }
 
-/// Edit: replace the buffer with the contents of a file.
-/// Warns if the buffer has unsaved changes (like q does).
+/// Split file contents into lines on `\n` alone. A `\r` before the
+/// `\n` stays in the line, as it does in ed, so a file with CRLF endings
+/// is written back with them.
+fn split_lines(content: &str) -> std::str::SplitTerminator<'_, char> {
+    content.split_terminator('\n')
+}
+
+/// Edit: replace the buffer with the contents of a file. The file is
+/// loaded into a new buffer, so a failed load leaves the old one as it
+/// was. The unsaved-changes check is the caller's: `e` goes through the
+/// loop's warning, `E` does not.
 fn run_edit(buf: &mut Buffer, args: &str) -> Action {
     let filename_arg = args.trim_start();
 
@@ -655,13 +762,14 @@ fn run_edit(buf: &mut Buffer, args: &str) -> Action {
         filename_arg.to_string()
     };
 
-    // Replace the buffer entirely.
-    *buf = Buffer::new();
-    match load_file(&filename, buf) {
-        Ok(LoadOutcome::Loaded(bytes)) => Action::Print(format!("{bytes}")),
-        Ok(LoadOutcome::NewFile) => Action::Print(format!("{filename}: new file")),
-        Err(e) => Action::Error(e),
-    }
+    let mut fresh = Buffer::new();
+    let action = match load_file(&filename, &mut fresh) {
+        Ok(LoadOutcome::Loaded(bytes)) => Action::Confirm(format!("{bytes}")),
+        Ok(LoadOutcome::NewFile) => Action::Confirm(format!("{filename}: new file")),
+        Err(e) => return Action::Error(e),
+    };
+    *buf = fresh;
+    action
 }
 
 /// Read: append the contents of a file after the addressed line.
@@ -697,7 +805,7 @@ fn run_read(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
     };
     let bytes = content.len();
 
-    for (insert_at, line) in (after..).zip(content.lines()) {
+    for (insert_at, line) in (after..).zip(split_lines(&content)) {
         buf.append_after(insert_at, line.to_string());
     }
 
@@ -705,7 +813,7 @@ fn run_read(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
         buf.set_filename(filename);
     }
 
-    Action::Print(format!("{bytes}"))
+    Action::Confirm(format!("{bytes}"))
 }
 
 /// Substitute: apply a regex replacement to the addressed lines.
@@ -716,13 +824,16 @@ fn run_read(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
 fn run_substitute(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
     let args = args.as_bytes();
 
-    let (pattern, replacement, global) = if args.is_empty() {
+    let (subst, mode) = if args.is_empty() {
         match buf.last_subst() {
-            Some((p, r, g)) => (p.clone(), r.clone(), *g),
+            Some(last) => (last.clone(), None),
             None => return Action::Error("no previous substitute".to_string()),
         }
     } else {
         let delim = args[0];
+        if !valid_delimiter(delim) {
+            return Action::Error("invalid delimiter".to_string());
+        }
         let rest = &args[1..];
 
         let (pattern, rest) = match scan_delimited(rest, delim) {
@@ -730,18 +841,31 @@ fn run_substitute(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
             None => return Action::Error("unterminated pattern".to_string()),
         };
 
-        let (replacement, rest) = match scan_delimited(rest, delim) {
-            Some(r) => r,
-            None => return Action::Error("unterminated replacement".to_string()),
-        };
+        let (replacement, rest) = scan_delimited(rest, delim).unwrap_or((rest, &[]));
 
-        let global = rest.contains(&b'g');
-        buf.set_last_subst(pattern.clone(), replacement.clone(), global);
-        (pattern, replacement, global)
+        let replacement = if replacement == b"%" {
+            match buf.last_subst() {
+                Some(last) => last.replacement.clone(),
+                None => return Action::Error("no previous substitute".to_string()),
+            }
+        } else {
+            replacement.to_vec()
+        };
+        let (nth, global, mode) = match parse_suffix(rest) {
+            Ok(s) => s,
+            Err(e) => return Action::Error(e),
+        };
+        let subst = Substitution {
+            pattern: pattern.to_vec(),
+            replacement,
+            nth,
+            global,
+        };
+        buf.set_last_subst(subst.clone());
+        (subst, mode)
     };
 
-    // Compile the pattern.
-    let re = bre::Regex::compile(&pattern);
+    let re = bre::Regex::compile(&subst.pattern);
 
     // Resolve the address range (default: current line).
     let range = match spec.resolve(buf) {
@@ -758,11 +882,7 @@ fn run_substitute(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
         };
         let line_bytes = line.as_bytes();
 
-        let new_line = if global {
-            substitute_all(&re, line_bytes, &replacement)
-        } else {
-            substitute_first(&re, line_bytes, &replacement)
-        };
+        let new_line = substitute(&re, line_bytes, &subst.replacement, subst.nth, subst.global);
 
         if let Some(new_bytes) = new_line {
             // Always valid UTF-8: `line_bytes` and `replacement` are
@@ -780,7 +900,10 @@ fn run_substitute(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
         Some(n) => {
             buf.set_current(n);
             match buf.line(n) {
-                Some(s) => Action::Print(s.to_string()),
+                Some(line) => match mode {
+                    Some(mode) => Action::Print(format_line(n, line, &mode)),
+                    None => Action::Confirm(line.to_string()),
+                },
                 None => Action::Error("invalid address".to_string()),
             }
         }
@@ -788,85 +911,124 @@ fn run_substitute(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
     }
 }
 
-/// Scan a delimiter-terminated field, handling backslash escapes.
-/// Returns the field content (with escapes preserved for the BRE
-/// engine) and the remainder after the closing delimiter.
-fn scan_delimited(input: &[u8], delim: u8) -> Option<(Vec<u8>, &[u8])> {
-    let mut result = Vec::new();
+/// POSIX allows any character but space and newline. The fields are
+/// scanned byte by byte, so ved also requires it to be one byte.
+fn valid_delimiter(delim: u8) -> bool {
+    delim.is_ascii() && !matches!(delim, b' ' | b'\n')
+}
+
+/// Split `input` at the first unescaped `delim`, returning the field
+/// before it and the rest after it, or None if there is no closing
+/// delimiter. Escapes are skipped, not interpreted: `\.` stays `\.`,
+/// so the pattern compiler and the replacement expander, which know
+/// what an escape means, see what the user typed. An escaped delimiter
+/// reaches them as backslash-delimiter, which both read as the literal
+/// character.
+fn scan_delimited(input: &[u8], delim: u8) -> Option<(&[u8], &[u8])> {
     let mut i = 0;
     while i < input.len() {
         if input[i] == delim {
-            return Some((result, &input[i + 1..]));
+            return Some((&input[..i], &input[i + 1..]));
         }
         if input[i] == b'\\' && i + 1 < input.len() {
-            if input[i + 1] == delim {
-                // Escaped delimiter: include just the delimiter
-                result.push(delim);
-                i += 2;
-            } else {
-                // Other escape: pass through as-is for the BRE
-                // engine or replacement expander to interpret.
-                result.push(input[i]);
-                result.push(input[i + 1]);
-                i += 2;
-            }
+            i += 2;
         } else {
-            result.push(input[i]);
             i += 1;
         }
     }
-    None // no closing delimiter found
+    None
 }
 
-/// Replace the first match in `text`. Returns None if no match.
-fn substitute_first(re: &bre::Regex, text: &[u8], replacement: &[u8]) -> Option<Vec<u8>> {
-    let m = re.find(text)?;
-    let mut result = Vec::new();
-    result.extend_from_slice(&text[..m.start]);
-    result.extend_from_slice(&bre::expand_replacement(replacement, &m, text));
-    result.extend_from_slice(&text[m.end..]);
-    Some(result)
-}
-
-/// Replace all non-overlapping matches in `text`. Returns None
-/// if no match was found at all.
-fn substitute_all(re: &bre::Regex, text: &[u8], replacement: &[u8]) -> Option<Vec<u8>> {
-    let mut result = Vec::new();
-    let mut pos = 0;
-    let mut matched = false;
-
-    while pos <= text.len() {
-        match re.find(&text[pos..]) {
-            Some(m) => {
-                matched = true;
-                let abs_start = pos + m.start;
-                let abs_end = pos + m.end;
-                result.extend_from_slice(&text[pos..abs_start]);
-                // For expand_replacement, the Match positions are
-                // relative to the slice we searched, but we need
-                // them relative to that same slice for text lookup.
-                result.extend_from_slice(&bre::expand_replacement(replacement, &m, &text[pos..]));
-                // Advance past the match. If the match was empty (a
-                // pattern like `x*` or `.*` can match nothing), step
-                // one whole character to avoid an infinite loop —
-                // one raw byte would risk splitting a multi-byte
-                // character right where matching resumes.
-                if abs_end == abs_start {
-                    let w = bre::char_width(&text[abs_start..]);
-                    result.extend_from_slice(&text[abs_start..abs_start + w]);
-                    pos = abs_start + w.max(1);
-                } else {
-                    pos = abs_end;
-                }
+/// Parse what follows the replacement in `s/re/new/`: a count, `g`,
+/// and at most one of `p`, `l` and `n`, each at most once. A count and
+/// `g` together are an error, as in GNU ed; POSIX leaves them
+/// unspecified.
+fn parse_suffix(rest: &[u8]) -> Result<(usize, bool, Option<PrintMode>), String> {
+    let digits = rest.iter().take_while(|b| b.is_ascii_digit()).count();
+    let nth = if digits == 0 {
+        1
+    } else {
+        match std::str::from_utf8(&rest[..digits])
+            .ok()
+            .and_then(|d| d.parse().ok())
+        {
+            Some(n) if n > 0 => n,
+            _ => return Err("invalid count".to_string()),
+        }
+    };
+    let mut global = false;
+    let mut mode = None;
+    for &b in &rest[digits..] {
+        match b {
+            b'g' if !global && digits == 0 => global = true,
+            b'p' | b'l' | b'n' if mode.is_none() => {
+                mode = Some(match b {
+                    b'l' => PrintMode::List,
+                    b'n' => PrintMode::Numbered,
+                    _ => PrintMode::Plain,
+                })
             }
-            None => {
-                result.extend_from_slice(&text[pos..]);
+            _ => return Err(format!("unknown suffix: {}", String::from_utf8_lossy(rest))),
+        }
+    }
+    Ok((nth, global, mode))
+}
+
+/// Replace matches of `re` in `text`: the `nth` match (counting from 1),
+/// and with `global` every match after it too. Returns None if nothing
+/// was replaced.
+///
+/// Searching resumes in the whole line rather than in the slice after
+/// the last match, so `^` can match only at the start of the line. An
+/// empty match at the position where the previous match ended is not a
+/// new match, which is POSIX's rule: `s/a*/X/g` on `baaac` gives
+/// `XbXcX`, with one X for `aaa` and none for the nothing after it.
+fn substitute(
+    re: &bre::Regex,
+    text: &[u8],
+    replacement: &[u8],
+    nth: usize,
+    global: bool,
+) -> Option<Vec<u8>> {
+    let mut result = Vec::new();
+    let mut copied = 0;
+    let mut search = 0;
+    let mut prev_end = None;
+    let mut seen = 0;
+    let mut replaced = false;
+
+    while search <= text.len() {
+        let Some(m) = re.find_at(text, search) else {
+            break;
+        };
+        let step = if m.start == m.end {
+            bre::char_width(&text[m.start..]).max(1)
+        } else {
+            0
+        };
+        if m.start == m.end && prev_end == Some(m.start) {
+            search = m.start + step;
+            continue;
+        }
+        seen += 1;
+        if seen >= nth {
+            result.extend_from_slice(&text[copied..m.start]);
+            result.extend_from_slice(&bre::expand_replacement(replacement, &m, text));
+            copied = m.end;
+            replaced = true;
+            if !global {
                 break;
             }
         }
+        prev_end = Some(m.end);
+        search = m.end + step;
     }
 
-    if matched { Some(result) } else { None }
+    if !replaced {
+        return None;
+    }
+    result.extend_from_slice(&text[copied..]);
+    Some(result)
 }
 
 /// Write the addressed range to a file. Empty spec defaults to the
@@ -885,15 +1047,6 @@ fn run_write(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
     } else {
         filename_arg.to_string()
     };
-
-    // Refuse to overwrite a non-UTF-8 source: saving edits as UTF-8 would
-    // silently corrupt the original. The user can still `w <newname>` to a
-    // different file, or convert with iconv and reopen.
-    if let Some(enc) = buf.non_utf8_block(&filename) {
-        return Action::Error(format!(
-            "refusing to overwrite {filename} (loaded as {enc}); convert with iconv first, or use `w <newname>` to write elsewhere"
-        ));
-    }
 
     // Build the content. The one place we deviate from the normal
     // resolve flow: an empty buffer with no address spec is allowed
@@ -920,7 +1073,7 @@ fn run_write(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
     let bytes = content.len();
 
     if let Err(e) = std::fs::write(&filename, &content) {
-        return Action::Error(format!("cannot write {}: {}", filename, e));
+        return Action::Error(format!("cannot write {filename}: {e}"));
     }
 
     // Build the confirmation message before we move `filename` into
@@ -930,7 +1083,7 @@ fn run_write(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
     if wrote_whole {
         buf.mark_saved();
     }
-    Action::Print(msg)
+    Action::Confirm(msg)
 }
 
 #[cfg(test)]
@@ -954,7 +1107,9 @@ mod tests {
 
     #[test]
     fn parse_args_with_nothing_returns_no_prompt_or_filename() {
-        let (prompt, filename) = parse_args(&[]).unwrap();
+        let Options {
+            prompt, filename, ..
+        } = parse_args(&[]).unwrap();
         assert_eq!(prompt, None);
         assert_eq!(filename, None);
     }
@@ -962,7 +1117,9 @@ mod tests {
     #[test]
     fn parse_args_prompt_flag_takes_the_next_arg() {
         let args = ["-p".to_string(), "custom> ".to_string()];
-        let (prompt, filename) = parse_args(&args).unwrap();
+        let Options {
+            prompt, filename, ..
+        } = parse_args(&args).unwrap();
         assert_eq!(prompt, Some("custom> ".to_string()));
         assert_eq!(filename, None);
     }
@@ -970,14 +1127,14 @@ mod tests {
     #[test]
     fn parse_args_long_prompt_flag_is_the_same_as_short() {
         let args = ["--prompt".to_string(), "custom> ".to_string()];
-        let (prompt, _) = parse_args(&args).unwrap();
+        let Options { prompt, .. } = parse_args(&args).unwrap();
         assert_eq!(prompt, Some("custom> ".to_string()));
     }
 
     #[test]
     fn parse_args_prompt_equals_form() {
         let args = ["--prompt=custom> ".to_string()];
-        let (prompt, _) = parse_args(&args).unwrap();
+        let Options { prompt, .. } = parse_args(&args).unwrap();
         assert_eq!(prompt, Some("custom> ".to_string()));
     }
 
@@ -996,7 +1153,9 @@ mod tests {
     #[test]
     fn parse_args_bare_word_is_a_filename() {
         let args = ["notes.txt".to_string()];
-        let (prompt, filename) = parse_args(&args).unwrap();
+        let Options {
+            prompt, filename, ..
+        } = parse_args(&args).unwrap();
         assert_eq!(prompt, None);
         assert_eq!(filename, Some("notes.txt".to_string()));
     }
@@ -1004,7 +1163,9 @@ mod tests {
     #[test]
     fn parse_args_prompt_and_filename_together() {
         let args = ["-p".to_string(), "> ".to_string(), "notes.txt".to_string()];
-        let (prompt, filename) = parse_args(&args).unwrap();
+        let Options {
+            prompt, filename, ..
+        } = parse_args(&args).unwrap();
         assert_eq!(prompt, Some("> ".to_string()));
         assert_eq!(filename, Some("notes.txt".to_string()));
     }
@@ -1045,7 +1206,7 @@ mod tests {
         let path = temp_path("write_explicit");
         let mut buf = buf_with(&["foo", "bar"]);
         let act = dispatch(&format!("w {}", path.to_str().unwrap()), &mut buf);
-        assert!(matches!(act, Action::Print(ref s) if s.contains("wrote")));
+        assert!(matches!(act, Action::Confirm(ref s) if s.contains("wrote")));
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "foo\nbar\n",
@@ -1062,8 +1223,73 @@ mod tests {
         let _ = dispatch(&format!("w {}", path.to_str().unwrap()), &mut buf);
         buf.replace_line(1, "changed".to_string());
         let act = dispatch("w", &mut buf);
-        assert!(matches!(act, Action::Print(_)));
+        assert!(matches!(act, Action::Confirm(_)));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "changed\n");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn wq_writes_the_remembered_file_and_quits() {
+        let path = temp_path("wq_remembered");
+        let mut buf = buf_with(&["foo"]);
+        buf.set_filename(path.to_str().unwrap().to_string());
+        let act = dispatch("wq", &mut buf);
+        assert!(matches!(act, Action::ConfirmAndQuit(ref s) if s.contains("wrote")));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "foo\n");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn wq_with_a_filename_writes_that_file_and_quits() {
+        let path = temp_path("wq_named");
+        let mut buf = buf_with(&["foo"]);
+        let act = dispatch(&format!("wq {}", path.to_str().unwrap()), &mut buf);
+        assert!(matches!(act, Action::ConfirmAndQuit(_)));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "foo\n");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn wq_that_cannot_write_does_not_quit() {
+        let mut buf = buf_with(&["foo"]);
+        let act = dispatch("wq", &mut buf);
+        assert!(matches!(act, Action::Error(_)));
+    }
+
+    #[test]
+    fn write_letter_glued_to_a_word_is_an_error_not_a_filename() {
+        let mut buf = buf_with(&["foo"]);
+        for cmd in ["wfoo", "efoo", "rfoo", "writer", "wqx"] {
+            let act = dispatch(cmd, &mut buf);
+            assert!(matches!(act, Action::Error(_)), "{cmd} should be an error");
+        }
+        assert_eq!(buf.len(), 1);
+    }
+
+    #[test]
+    fn long_form_write_edit_and_read_name_the_file_that_follows() {
+        let path = temp_path("long_forms");
+        let p = path.to_str().unwrap();
+        let mut buf = buf_with(&["foo"]);
+        assert!(matches!(
+            dispatch(&format!("write {p}"), &mut buf),
+            Action::Confirm(_)
+        ));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "foo\n");
+        assert!(matches!(
+            dispatch(&format!("read {p}"), &mut buf),
+            Action::Confirm(_)
+        ));
+        assert_eq!(buf.len(), 2);
+        assert!(matches!(
+            dispatch(&format!("write {p}"), &mut buf),
+            Action::Confirm(_)
+        ));
+        assert!(matches!(
+            dispatch(&format!("edit {p}"), &mut buf),
+            Action::Confirm(_)
+        ));
+        assert_eq!(buf.len(), 2);
         std::fs::remove_file(&path).unwrap();
     }
 
@@ -1072,17 +1298,6 @@ mod tests {
         let mut buf = buf_with(&["x"]);
         let act = dispatch("w", &mut buf);
         assert!(matches!(act, Action::Error(_)));
-    }
-
-    #[test]
-    fn write_refuses_to_overwrite_a_non_utf8_source() {
-        let path = temp_path("write_non_utf8");
-        let mut buf = buf_with(&["x"]);
-        buf.set_filename(path.to_str().unwrap().to_string());
-        buf.mark_non_utf8_source("UTF-16".to_string(), path.to_str().unwrap().to_string());
-        let act = dispatch("w", &mut buf);
-        assert!(matches!(act, Action::Error(ref e) if e.contains("UTF-16")));
-        assert!(!path.exists());
     }
 
     #[test]
@@ -1117,7 +1332,7 @@ mod tests {
         std::fs::write(&path, "x\ny\n").unwrap();
         let mut buf = buf_with(&["foo", "bar"]);
         let act = dispatch(&format!("1r {}", path.to_str().unwrap()), &mut buf);
-        assert!(matches!(act, Action::Print(_)));
+        assert!(matches!(act, Action::Confirm(_)));
         assert_eq!(buf.line(1), Some("foo"));
         assert_eq!(buf.line(2), Some("x"));
         assert_eq!(buf.line(3), Some("y"));
@@ -1147,8 +1362,9 @@ mod tests {
         let path = temp_path("edit_replace");
         std::fs::write(&path, "new1\nnew2\n").unwrap();
         let mut buf = buf_with(&["old1", "old2", "old3"]);
+        buf.mark_saved();
         let act = dispatch(&format!("e {}", path.to_str().unwrap()), &mut buf);
-        assert!(matches!(act, Action::Print(_)));
+        assert!(matches!(act, Action::Confirm(_)));
         assert_eq!(buf.len(), 2);
         assert_eq!(buf.line(1), Some("new1"));
         assert_eq!(buf.line(2), Some("new2"));
@@ -1158,6 +1374,7 @@ mod tests {
     #[test]
     fn edit_with_no_filename_and_none_remembered_errors() {
         let mut buf = buf_with(&["x"]);
+        buf.mark_saved();
         let act = dispatch("e", &mut buf);
         assert!(matches!(act, Action::Error(_)));
         // A failed edit must not touch the buffer.
@@ -1168,9 +1385,195 @@ mod tests {
     fn edit_of_a_missing_file_wipes_the_buffer_as_a_new_file() {
         let path = temp_path("edit_missing");
         let mut buf = buf_with(&["old1"]);
+        buf.mark_saved();
         let act = dispatch(&format!("e {}", path.to_str().unwrap()), &mut buf);
-        assert!(matches!(act, Action::Print(ref s) if s.contains("new file")));
+        assert!(matches!(act, Action::Confirm(ref s) if s.contains("new file")));
         assert!(buf.is_empty());
+    }
+
+    fn lines_of(buf: &Buffer) -> Vec<&str> {
+        (1..=buf.len()).filter_map(|n| buf.line(n)).collect()
+    }
+
+    #[test]
+    fn global_delete_leaves_the_line_after_the_last_deletion_current() {
+        let mut buf = buf_with(&["a1", "b2", "a3", "b4", "a5", "ab6"]);
+        dispatch("g/a/d", &mut buf);
+        assert_eq!(buf.line(buf.current()), Some("b4"));
+        let mut buf = buf_with(&["a1", "b2", "a3", "b4"]);
+        dispatch("g/a/d", &mut buf);
+        assert_eq!(buf.line(buf.current()), Some("b4"));
+        let mut buf = buf_with(&["a1", "a2"]);
+        dispatch("g/a/d", &mut buf);
+        assert_eq!(buf.current(), 0);
+    }
+
+    #[test]
+    fn global_relative_delete_hits_the_lines_before_the_marked_ones() {
+        let mut buf = buf_with(&["x", "a1", "y", "a2"]);
+        dispatch("g/a/-1d", &mut buf);
+        assert_eq!(lines_of(&buf), ["a1", "a2"]);
+    }
+
+    #[test]
+    fn global_join_follows_its_marks_after_each_join() {
+        let mut buf = buf_with(&["a1", "b1", "a2", "b2"]);
+        dispatch("g/a/j", &mut buf);
+        assert_eq!(lines_of(&buf), ["a1b1", "a2b2"]);
+    }
+
+    #[test]
+    fn global_insert_above_a_mark_does_not_shift_it_onto_another_line() {
+        let mut buf = buf_with(&["a1", "a2"]);
+        dispatch("g/a/t0", &mut buf);
+        assert_eq!(lines_of(&buf), ["a2", "a1", "a1", "a2"]);
+    }
+
+    #[test]
+    fn global_stops_at_the_first_failing_command() {
+        let mut buf = buf_with(&["a1", "b", "a2"]);
+        let act = dispatch("g/a/-1d", &mut buf);
+        assert!(matches!(act, Action::Error(_)));
+        assert_eq!(lines_of(&buf), ["a1", "b", "a2"]);
+        assert_eq!(buf.take_mark(), None, "marks are cleared after an error");
+    }
+
+    #[test]
+    fn move_carries_a_marked_line_with_it() {
+        let mut buf = buf_with(&["a", "b", "c"]);
+        buf.set_mark(3, true);
+        dispatch("3m0", &mut buf);
+        assert_eq!(lines_of(&buf), ["c", "a", "b"]);
+        assert_eq!(buf.take_mark(), Some(1));
+    }
+
+    #[test]
+    fn global_reverses_a_file_with_move_to_zero() {
+        let mut buf = buf_with(&["1", "2", "3", "4"]);
+        dispatch("g/^/m0", &mut buf);
+        assert_eq!(lines_of(&buf), ["4", "3", "2", "1"]);
+    }
+
+    #[test]
+    fn append_and_insert_accept_the_addresses_ed_accepts() {
+        // Each case: command, the line input mode appends after.
+        for (cmd, after) in [
+            ("0a", 0),
+            ("$a", 3),
+            ("2a", 2),
+            ("1,2a", 2),
+            ("3,1a", 1),
+            ("a", 1),
+        ] {
+            let mut buf = buf_with(&["one", "two", "three"]);
+            buf.set_current(1);
+            assert!(
+                matches!(dispatch(cmd, &mut buf), Action::EnterInputMode),
+                "{cmd}"
+            );
+            assert_eq!(buf.current(), after, "{cmd}");
+        }
+        for (cmd, after) in [("0i", 0), ("1i", 0), ("3i", 2)] {
+            let mut buf = buf_with(&["one", "two", "three"]);
+            assert!(
+                matches!(dispatch(cmd, &mut buf), Action::EnterInputMode),
+                "{cmd}"
+            );
+            assert_eq!(buf.current(), after, "{cmd}");
+        }
+    }
+
+    #[test]
+    fn append_and_insert_reject_an_address_past_the_end() {
+        for cmd in ["5a", "9,3a", "5i"] {
+            let mut buf = buf_with(&["one", "two", "three"]);
+            buf.set_current(1);
+            assert!(matches!(dispatch(cmd, &mut buf), Action::Error(_)), "{cmd}");
+            assert_eq!(buf.current(), 1, "{cmd} must not move the current line");
+        }
+        let mut empty = Buffer::new();
+        assert!(matches!(dispatch("a", &mut empty), Action::EnterInputMode));
+        assert!(matches!(dispatch("1a", &mut empty), Action::Error(_)));
+    }
+
+    #[test]
+    fn an_escaped_delimiter_is_the_literal_character() {
+        // Each case: line, command, result. Expected values are GNU
+        // ed's output for the same input.
+        for (line, cmd, want) in [
+            ("a.b", "s.a\\..X.", "Xb"),
+            ("x*y", "s*x\\*y*Z*", "Z"),
+            ("abc", "s&a&\\&&", "&bc"),
+            ("a/b", "s/\\//-/", "a-b"),
+            ("abc", "s/b/\\n/", "anc"),
+        ] {
+            let mut buf = buf_with(&[line]);
+            dispatch(cmd, &mut buf);
+            assert_eq!(buf.line(1), Some(want), "{cmd} on {line}");
+        }
+        let mut buf = buf_with(&["axb"]);
+        assert!(matches!(dispatch("s.a\\..X.", &mut buf), Action::Error(_)));
+        assert_eq!(buf.line(1), Some("axb"));
+    }
+
+    #[test]
+    fn a_utf8_file_with_the_utf7_marker_loads_and_saves_in_place() {
+        let path = temp_path("utf7_marker");
+        std::fs::write(&path, "see +ACI- here\n").unwrap();
+        let mut buf = Buffer::new();
+        load_file(path.to_str().unwrap(), &mut buf).unwrap();
+        dispatch("s/see/saw/", &mut buf);
+        assert!(matches!(dispatch("w", &mut buf), Action::Confirm(_)));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "saw +ACI- here\n");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn crlf_line_endings_survive_a_load_and_a_write() {
+        let path = temp_path("crlf");
+        std::fs::write(&path, "one\r\ntwo\r\n").unwrap();
+        let mut buf = Buffer::new();
+        load_file(path.to_str().unwrap(), &mut buf).unwrap();
+        assert_eq!(buf.line(1), Some("one\r"));
+        assert!(matches!(dispatch("w", &mut buf), Action::Confirm(_)));
+        assert_eq!(std::fs::read(&path).unwrap(), b"one\r\ntwo\r\n");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn a_missing_final_newline_still_ends_the_last_line() {
+        assert_eq!(split_lines("a\nb").collect::<Vec<_>>(), ["a", "b"]);
+        assert_eq!(split_lines("a\nb\n").collect::<Vec<_>>(), ["a", "b"]);
+        assert_eq!(split_lines("").count(), 0);
+    }
+
+    #[test]
+    fn edit_on_a_modified_buffer_asks_the_loop_to_warn() {
+        let mut buf = buf_with(&["unsaved"]);
+        let act = dispatch("e other.txt", &mut buf);
+        assert!(matches!(act, Action::EditModified(ref a) if a.trim() == "other.txt"));
+        assert_eq!(buf.line(1), Some("unsaved"));
+    }
+
+    #[test]
+    fn capital_e_edits_a_modified_buffer_without_asking() {
+        let path = temp_path("capital_e");
+        std::fs::write(&path, "new\n").unwrap();
+        let mut buf = buf_with(&["unsaved"]);
+        let act = dispatch(&format!("E {}", path.to_str().unwrap()), &mut buf);
+        assert!(matches!(act, Action::Confirm(_)));
+        assert_eq!(buf.line(1), Some("new"));
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn edit_that_fails_to_load_leaves_the_buffer_alone() {
+        let dir = std::env::temp_dir();
+        let mut buf = buf_with(&["unsaved"]);
+        let act = dispatch(&format!("E {}", dir.to_str().unwrap()), &mut buf);
+        assert!(matches!(act, Action::Error(_)));
+        assert_eq!(buf.line(1), Some("unsaved"));
+        assert!(buf.is_modified());
     }
 
     // ── render_list_line (l command) ─────────────────────────
@@ -1230,7 +1633,7 @@ mod tests {
         let mut buf = buf_with(&["foo", "bar", "baz"]);
         buf.set_current(1);
         let act = dispatch("j", &mut buf);
-        assert!(matches!(act, Action::Print(_)));
+        assert!(matches!(act, Action::Confirm(_)));
         assert_eq!(buf.len(), 2);
         assert_eq!(buf.line(1), Some("foobar"));
         assert_eq!(buf.line(2), Some("baz"));
@@ -1241,7 +1644,7 @@ mod tests {
     fn join_range_concatenates_all_lines() {
         let mut buf = buf_with(&["a", "b", "c", "d", "e"]);
         let act = dispatch("2,4j", &mut buf);
-        assert!(matches!(act, Action::Print(_)));
+        assert!(matches!(act, Action::Confirm(_)));
         assert_eq!(buf.len(), 3);
         assert_eq!(buf.line(2), Some("bcd"));
         assert_eq!(buf.line(3), Some("e"));
@@ -1252,14 +1655,10 @@ mod tests {
     fn join_single_line_is_silent_noop() {
         let mut buf = buf_with(&["one", "two", "three"]);
         let act = dispatch("2j", &mut buf);
-        if let Action::Print(s) = act {
-            assert!(s.is_empty());
-        } else {
-            panic!("expected silent Print on single-line join");
-        }
+        assert!(matches!(act, Action::Done));
         assert_eq!(buf.len(), 3);
         assert_eq!(buf.line(2), Some("two"));
-        assert_eq!(buf.current(), 2);
+        assert_eq!(buf.current(), 3, "the current line is unchanged");
     }
 
     #[test]
@@ -1302,7 +1701,7 @@ mod tests {
     fn delete_single_line_reports_singular_message() {
         let mut buf = buf_with(&["a", "b", "c"]);
         let act = dispatch("2d", &mut buf);
-        assert!(matches!(act, Action::Print(ref s) if s == "deleted line 2"));
+        assert!(matches!(act, Action::Confirm(ref s) if s == "deleted line 2"));
         assert_eq!(buf.len(), 2);
         assert_eq!(buf.line(1), Some("a"));
         assert_eq!(buf.line(2), Some("c"));
@@ -1312,7 +1711,7 @@ mod tests {
     fn delete_range_reports_count_and_bounds() {
         let mut buf = buf_with(&["a", "b", "c", "d"]);
         let act = dispatch("2,3d", &mut buf);
-        assert!(matches!(act, Action::Print(ref s) if s == "deleted 2 lines (2-3)"));
+        assert!(matches!(act, Action::Confirm(ref s) if s == "deleted 2 lines (2-3)"));
         assert_eq!(buf.len(), 2);
     }
 
@@ -1330,7 +1729,12 @@ mod tests {
     fn global_runs_print_on_every_matching_line() {
         let mut buf = buf_with(&["foo", "bar", "foo2"]);
         let act = dispatch("g/foo/p", &mut buf);
-        assert!(matches!(act, Action::Print(ref s) if s == "foo\nfoo2"));
+        let Action::Batch(results) = act else {
+            panic!("expected one result per matching line");
+        };
+        assert!(
+            matches!(&results[..], [Action::Print(a), Action::Print(b)] if a == "foo" && b == "foo2")
+        );
     }
 
     #[test]
@@ -1385,6 +1789,24 @@ mod tests {
         let mut buf = buf_with(&["a"]);
         let act = dispatch("H", &mut buf);
         assert!(matches!(act, Action::Print(ref s) if s.contains("ved commands")));
+    }
+
+    #[test]
+    fn help_mentions_every_command_the_dispatcher_accepts() {
+        let Action::Print(help) = run_help() else {
+            panic!("help should print");
+        };
+        for cmd in [
+            "a", "i", "c", "d", "p", "n", "l", "j", "m", "t", "s", "g", "v", "w", "wq", "r", "e",
+            "E", "q", "Q", "H",
+        ] {
+            let listed = help.lines().any(|l| {
+                l.trim_start()
+                    .trim_start_matches(|c| "[.,+1$]".contains(c))
+                    .starts_with(cmd)
+            });
+            assert!(listed, "help does not list {cmd}");
+        }
     }
 
     #[test]
@@ -1536,7 +1958,7 @@ mod tests {
         // Unlike m, t can target inside the source range.
         let mut buf = buf_with(&["a", "b", "c", "d"]);
         let act = dispatch("1,3t2", &mut buf);
-        assert!(matches!(act, Action::Print(_)));
+        assert!(matches!(act, Action::Confirm(_)));
         assert_eq!(buf.len(), 7);
     }
 
@@ -1554,6 +1976,98 @@ mod tests {
     }
 
     // ── bare s repeats last substitute ───────────────────────
+
+    #[test]
+    fn substitute_without_its_closing_delimiter_runs_to_the_end_of_the_line() {
+        let mut buf = buf_with(&["abc"]);
+        assert!(matches!(dispatch("s/a/b", &mut buf), Action::Confirm(ref l) if l == "bbc"));
+        let mut buf = buf_with(&["abc"]);
+        dispatch("s/b/", &mut buf);
+        assert_eq!(buf.line(1), Some("ac"));
+        let mut buf = buf_with(&["abc"]);
+        assert!(matches!(dispatch("s/a", &mut buf), Action::Error(_)));
+    }
+
+    #[test]
+    fn substitute_count_replaces_only_that_match() {
+        for (cmd, want) in [("s/a/X/2", "aXa"), ("s/a/X/3", "aaX"), ("s/a/X/2p", "aXa")] {
+            let mut buf = buf_with(&["aaa"]);
+            assert!(
+                matches!(
+                    dispatch(cmd, &mut buf),
+                    Action::Print(_) | Action::Confirm(_)
+                ),
+                "{cmd}"
+            );
+            assert_eq!(buf.line(1), Some(want), "{cmd}");
+        }
+        let mut buf = buf_with(&["aaa"]);
+        assert!(matches!(dispatch("s/a/X/4", &mut buf), Action::Error(_)));
+    }
+
+    #[test]
+    fn substitute_print_suffixes_choose_how_the_line_is_shown() {
+        let mut buf = buf_with(&["aaa"]);
+        assert!(matches!(dispatch("s/a/X/n", &mut buf), Action::Print(ref l) if l == "1\tXaa"));
+        let mut buf = buf_with(&["aaa"]);
+        assert!(matches!(dispatch("s/a/X/l", &mut buf), Action::Print(ref l) if l == "Xaa$"));
+        let mut buf = buf_with(&["aaa"]);
+        assert!(matches!(dispatch("s/a/X/gp", &mut buf), Action::Print(ref l) if l == "XXX"));
+    }
+
+    #[test]
+    fn substitute_rejects_suffixes_it_does_not_understand() {
+        for cmd in [
+            "s/a/X/z", "s/a/X/gq", "s/a/X/2g", "s/a/X/g2", "s/a/X/0", "s/a/X/pp", "s/a/X/ g",
+            "s/a/X/gg",
+        ] {
+            let mut buf = buf_with(&["aaa"]);
+            assert!(matches!(dispatch(cmd, &mut buf), Action::Error(_)), "{cmd}");
+            assert_eq!(buf.line(1), Some("aaa"), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn bare_s_repeats_the_count_too() {
+        let mut buf = buf_with(&["aaa", "aaa"]);
+        dispatch("1s/a/X/2", &mut buf);
+        dispatch("2s", &mut buf);
+        assert_eq!(buf.line(2), Some("aXa"));
+    }
+
+    #[test]
+    fn percent_alone_is_the_previous_replacement() {
+        let mut buf = buf_with(&["ab"]);
+        dispatch("s/a/X/", &mut buf);
+        dispatch("s/b/%/", &mut buf);
+        assert_eq!(buf.line(1), Some("XX"));
+        dispatch("s/X/a%/", &mut buf);
+        assert_eq!(buf.line(1), Some("a%X"));
+        let mut fresh = buf_with(&["ab"]);
+        assert!(matches!(dispatch("s/a/%/", &mut fresh), Action::Error(_)));
+        assert_eq!(fresh.line(1), Some("ab"));
+    }
+
+    #[test]
+    fn backslash_can_be_the_delimiter() {
+        let mut buf = buf_with(&["a"]);
+        dispatch("s\\a\\b\\", &mut buf);
+        assert_eq!(buf.line(1), Some("b"));
+    }
+
+    #[test]
+    fn a_delimiter_that_is_not_one_ascii_byte_is_an_error_not_a_panic() {
+        for cmd in [
+            "s\u{e9}*\u{d7}j\\",
+            "s\u{e9}a\u{e9}b\u{e9}",
+            "g\u{e9}a\u{e9}p",
+            "s a b ",
+        ] {
+            let mut buf = buf_with(&["a"]);
+            assert!(matches!(dispatch(cmd, &mut buf), Action::Error(_)), "{cmd}");
+            assert_eq!(buf.line(1), Some("a"), "{cmd}");
+        }
+    }
 
     #[test]
     fn bare_s_with_no_prior_substitute_errors() {
@@ -1616,15 +2130,31 @@ mod tests {
 
     #[test]
     fn global_substitute_with_star_that_can_match_empty_preserves_characters() {
-        // `[a-z]*` matches zero-width at é (not a-z), and the old
-        // empty-match stepping in substitute_all advanced by one raw
-        // byte to avoid looping forever — splitting é in half and
-        // panicking on the UTF-8 rebuild. It has to step by one
-        // whole character instead.
+        // `[a-z]*` matches zero-width at é, and stepping past an empty
+        // match has to move a whole character, not a byte. The empty
+        // match right after `caf` is not a new match. sed gives XéX.
         let mut buf = buf_with(&["café"]);
         let act = dispatch("s/[a-z]*/X/g", &mut buf);
         assert!(!matches!(act, Action::Error(_)));
-        assert_eq!(buf.line(1), Some("XXéX"));
+        assert_eq!(buf.line(1), Some("XéX"));
+    }
+
+    #[test]
+    fn substitute_global_matches_caret_once_and_skips_adjacent_empty_matches() {
+        // Expected values are sed's: GNU ed refuses the empty-match
+        // cases with "Infinite substitution loop".
+        for (line, cmd, want) in [
+            ("aaa", "s/^a/X/g", "Xaa"),
+            ("baaac", "s/a*/X/g", "XbXcX"),
+            ("abc", "s/x*/-/g", "-a-b-c-"),
+            ("abc", "s/b*/-/g", "-a-c-"),
+            ("bca", "s/a*$/E/g", "bcE"),
+            ("abc", "s/$/!/g", "abc!"),
+        ] {
+            let mut buf = buf_with(&[line]);
+            dispatch(cmd, &mut buf);
+            assert_eq!(buf.line(1), Some(want), "{cmd} on {line}");
+        }
     }
 
     // ── search addresses: /pattern/ and ?pattern? ─────────────

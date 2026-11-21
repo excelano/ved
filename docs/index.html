@@ -198,8 +198,8 @@ The slOw brOwn fOx
 
         <p>In the replacement, <code>&amp;</code> stands for the whole match and <code>\1</code> through <code>\9</code> stand for captured groups. So you can rearrange pieces of matched text:</p>
 
-<pre><code>* 1s/\(brown\) \(fox\)/\2 the \1 one/
-The slOw fox the brOwn one
+<pre><code>* 1s/\(brOwn\) \(fOx\)/\2 the \1 one/
+The slOw fOx the brOwn one
 * </code></pre>
 
         <p>An address range applies the substitution to each line in turn. <code>1,$s/old/new/g</code> replaces every occurrence of "old" with "new" throughout the entire buffer.</p>
@@ -247,14 +247,14 @@ avocado toast
             <dd>Writes the buffer to a file. Without a filename, it writes back to whatever file you opened or most recently wrote. Confirms with the byte count.</dd>
 
             <dt><code>edit filename</code></dt>
-            <dd>Replaces the buffer with the contents of a file. You lose whatever was in the buffer, so save first if you care about it.</dd>
+            <dd>Replaces the buffer with the contents of a file. If the buffer has unsaved changes, ved warns and does nothing; type the command again to discard them and load the file.</dd>
 
             <dt><code>read filename</code> (or <code>Nread filename</code>)</dt>
             <dd>Inserts the contents of a file into the buffer after the addressed line (default: the end). Useful for concatenating files.</dd>
         </dl>
 
 <pre><code>* write notes.txt
-wrote 37 bytes to notes.txt
+wrote 51 bytes to notes.txt
 * </code></pre>
 
         <p>Any time you need a reminder of what's available, type <code>help</code> and ved will print a summary of every command, address form, and regex symbol it understands.</p>
@@ -277,12 +277,15 @@ wrote 37 bytes to notes.txt
                 <tr><td><code>delete</code></td><td><code>d</code></td><td>Delete addressed lines</td></tr>
                 <tr><td><code>print</code></td><td><code>p</code></td><td>Print addressed lines</td></tr>
                 <tr><td><code>number</code></td><td><code>n</code></td><td>Print with line numbers</td></tr>
+                <tr><td><code>write</code></td><td><code>w</code></td><td>Write the buffer to a file</td></tr>
+                <tr><td><code>edit</code></td><td><code>e</code></td><td>Replace the buffer with a file</td></tr>
+                <tr><td><code>read</code></td><td><code>r</code></td><td>Read a file into the buffer</td></tr>
                 <tr><td><code>quit</code></td><td><code>q</code></td><td>Quit (warns on unsaved changes)</td></tr>
                 <tr><td><code>help</code></td><td><code>H</code></td><td>Print the command reference</td></tr>
             </tbody>
         </table>
 
-        <p>The commands that already use delimiters — <code>s/old/new/</code>, <code>g/pattern/cmd</code>, <code>v/pattern/cmd</code>, <code>w filename</code>, <code>e filename</code>, <code>r filename</code> — have no long form. They are single letters in both ved and ed.</p>
+        <p>The commands that already use delimiters — <code>s/old/new/</code>, <code>g/pattern/cmd</code>, and <code>v/pattern/cmd</code> — have no long form. They are single letters in both ved and ed.</p>
 
         <p>That is the whole deal. Every skill you just picked up transfers directly to the editor that's been on every Unix system since 1969. If you ever find yourself on a stripped-down server with no <code>vim</code> or <code>nano</code>, ed will be there. And now you know how to use it.</p>
 
