@@ -823,6 +823,10 @@ fn run_read(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
 /// replacement, and global flag), erroring if none has run yet.
 fn run_substitute(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
     let args = args.as_bytes();
+    let range = match spec.resolve(buf) {
+        Ok(r) => r,
+        Err(e) => return Action::Error(e),
+    };
 
     let (subst, mode) = if args.is_empty() {
         match buf.last_subst() {
@@ -866,12 +870,6 @@ fn run_substitute(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
     };
 
     let re = bre::Regex::compile(&subst.pattern);
-
-    // Resolve the address range (default: current line).
-    let range = match spec.resolve(buf) {
-        Ok(r) => r,
-        Err(e) => return Action::Error(e),
-    };
 
     let mut last_modified_line = None;
 
@@ -2083,6 +2081,14 @@ mod tests {
             assert!(matches!(dispatch(cmd, &mut buf), Action::Error(_)), "{cmd}");
             assert_eq!(buf.line(1), Some("a"), "{cmd}");
         }
+    }
+
+    #[test]
+    fn substitute_with_an_invalid_address_is_not_remembered() {
+        let mut buf = buf_with(&["aaa", "bbb"]);
+        assert!(matches!(dispatch("9s/a/X/g", &mut buf), Action::Error(_)));
+        assert!(matches!(dispatch("1s", &mut buf), Action::Error(_)));
+        assert_eq!(buf.line(1), Some("aaa"));
     }
 
     #[test]
