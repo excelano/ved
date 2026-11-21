@@ -36,15 +36,17 @@ winget install Excelano.ved
 
 ### Cargo
 
-If you have a Rust toolchain, install the latest release from [crates.io](https://crates.io/crates/ved):
+On macOS, or anywhere with a Rust toolchain, install the latest release from [crates.io](https://crates.io/crates/ved), and run the same command again to upgrade:
 
 ```sh
 cargo install ved
 ```
 
+There is no Homebrew formula and no macOS download. If you installed ved from the `excelano/tap` Homebrew tap, it will not be upgraded; remove it with `brew uninstall ved` and `brew untap excelano/tap`, then install with Cargo.
+
 ### Build from source
 
-ved requires only a Rust toolchain recent enough for the edition `Cargo.toml` names. No external crates, no C dependencies, no runtime.
+ved requires only a Rust toolchain at least as new as the `rust-version` in `Cargo.toml`. No external crates, no C dependencies, no runtime.
 
 ```sh
 cd ved
@@ -69,20 +71,24 @@ The `--` separates cargo's flags from ved's. `-p '* '` sets the command prompt (
 
 ## Quick start
 
+A session with the prompt set to `* `, on a two-line file:
+
 ```
-$ ved myfile.txt           # open a file
-135                        # ved prints the byte count
-* ,p                      # print all lines
+$ ved -p '* ' myfile.txt
+32
+* ,p
 Hello world
 This is a test file
-* 1s/Hello/Goodbye/       # substitute on line 1
+* 1s/Hello/Goodbye/
 Goodbye world
-* g/test/n                # print lines matching "test" with numbers
+* g/test/n
 2	This is a test file
-* w                        # write back to the file
-37
-* q                        # quit
+* w
+wrote 34 bytes to myfile.txt
+* q
 ```
+
+ved prints the file's size when it opens it, confirms each change, and says how many bytes it wrote. With `-s`, it prints only what the commands ask for, as `ed -s` does.
 
 ## Commands
 
