@@ -77,3 +77,19 @@ fn wq_saves_and_exits() {
     assert_eq!(r.status, 0);
     assert_eq!(r.file, "ONE\n");
 }
+
+#[test]
+fn end_of_input_on_a_modified_buffer_warns_like_q() {
+    let r = run(&[], "one\n", "a\nX\n.\n");
+    assert!(r.stdout.contains("warning: buffer modified"));
+    assert_eq!(r.status, 1);
+    assert_eq!(r.file, "one\n");
+}
+
+#[test]
+fn end_of_input_on_a_saved_buffer_exits_quietly() {
+    let r = run(&[], "one\n", "a\nX\n.\nw\n");
+    assert!(!r.stdout.contains("warning"));
+    assert_eq!(r.status, 0);
+    assert_eq!(r.file, "one\nX\n");
+}

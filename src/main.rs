@@ -140,7 +140,16 @@ fn run_repl(prompt: Option<&str>, filename: Option<&str>) -> ExitCode {
 
         line.clear();
         match reader.read_line(&mut line) {
-            Ok(0) => return exit(had_error),
+            Ok(0) => {
+                input_mode = false;
+                if buffer.is_modified() && !modified_warned {
+                    let _ = writeln!(out, "? warning: buffer modified");
+                    modified_warned = true;
+                    had_error = true;
+                    continue;
+                }
+                return exit(had_error);
+            }
             Ok(_) => {}
             Err(e) => {
                 eprintln!("ved: read error: {e}");
