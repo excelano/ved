@@ -1394,6 +1394,22 @@ mod tests {
     }
 
     #[test]
+    fn comma_on_an_empty_buffer_is_address_zero_for_a_and_i() {
+        for cmd in [",a", ",i", ";a", "$a", ".a"] {
+            let mut buf = Buffer::new();
+            assert!(
+                matches!(dispatch(cmd, &mut buf), Action::EnterInputMode),
+                "{cmd}"
+            );
+            assert_eq!(buf.current(), 0, "{cmd}");
+        }
+        for cmd in ["1a", "1,$a", ",p"] {
+            let mut buf = Buffer::new();
+            assert!(matches!(dispatch(cmd, &mut buf), Action::Error(_)), "{cmd}");
+        }
+    }
+
+    #[test]
     fn a_relative_address_can_reach_line_zero_where_zero_is_allowed() {
         let mut buf = buf_with(&["a1", "b2", "a3"]);
         buf.set_current(1);
