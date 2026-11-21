@@ -793,10 +793,7 @@ fn run_substitute(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
             None => return Action::Error("unterminated pattern".to_string()),
         };
 
-        let (replacement, rest) = match scan_delimited(rest, delim) {
-            Some(r) => r,
-            None => return Action::Error("unterminated replacement".to_string()),
-        };
+        let (replacement, rest) = scan_delimited(rest, delim).unwrap_or((rest, &[]));
 
         let global = rest.contains(&b'g');
         buf.set_last_subst(pattern.to_vec(), replacement.to_vec(), global);
@@ -1857,6 +1854,17 @@ mod tests {
     }
 
     // ── bare s repeats last substitute ───────────────────────
+
+    #[test]
+    fn substitute_without_its_closing_delimiter_runs_to_the_end_of_the_line() {
+        let mut buf = buf_with(&["abc"]);
+        assert!(matches!(dispatch("s/a/b", &mut buf), Action::Print(ref l) if l == "bbc"));
+        let mut buf = buf_with(&["abc"]);
+        dispatch("s/b/", &mut buf);
+        assert_eq!(buf.line(1), Some("ac"));
+        let mut buf = buf_with(&["abc"]);
+        assert!(matches!(dispatch("s/a", &mut buf), Action::Error(_)));
+    }
 
     #[test]
     fn bare_s_with_no_prior_substitute_errors() {
