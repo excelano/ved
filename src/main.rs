@@ -20,7 +20,7 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
 
-    let (prompt, filename) = match parse_args(&args) {
+    let options = match parse_args(&args) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("ved: {e}");
@@ -29,14 +29,19 @@ fn main() -> ExitCode {
         }
     };
 
-    run_repl(prompt.as_deref(), filename.as_deref())
+    run_repl(&options)
 }
 
-/// Parse command line arguments.
-/// Returns (prompt, filename) on success.
-fn parse_args(args: &[String]) -> Result<(Option<String>, Option<String>), String> {
+struct Options {
+    prompt: Option<String>,
+    filename: Option<String>,
+    silent: bool,
+}
+
+fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut prompt: Option<String> = None;
     let mut filename: Option<String> = None;
+    let mut silent = false;
     let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
@@ -51,6 +56,7 @@ fn parse_args(args: &[String]) -> Result<(Option<String>, Option<String>), Strin
             s if s.starts_with("--prompt=") => {
                 prompt = Some(s["--prompt=".len()..].to_string());
             }
+            "-s" | "--script" => silent = true,
             "-h" | "--help" => {
                 print_usage();
                 std::process::exit(0);
@@ -68,7 +74,11 @@ fn parse_args(args: &[String]) -> Result<(Option<String>, Option<String>), Strin
         }
         i += 1;
     }
-    Ok((prompt, filename))
+    Ok(Options {
+        prompt,
+        filename,
+        silent,
+    })
 }
 
 fn print_usage() {
@@ -78,6 +88,9 @@ fn print_usage() {
     println!();
     println!("Options:");
     println!("  -p, --prompt <STRING>   Set the command prompt");
+    println!(
+        "  -s, --script            Print only what commands ask for: no byte counts or confirmations"
+    );
     println!("  -h, --help              Show this help message and exit");
     println!("  -V, --version           Show version information and exit");
 }
@@ -90,7 +103,10 @@ fn print_usage() {
 /// parsed by `dispatch` and the resulting `Action` is applied. In
 /// *input mode* (entered by `a`) every input line goes verbatim
 /// into the buffer until the user types a single `.` on a line.
-fn run_repl(prompt: Option<&str>, filename: Option<&str>) -> ExitCode {
+fn run_repl(options: &Options) -> ExitCode {
+    let prompt = options.prompt.as_deref();
+    let filename = options.filename.as_deref();
+    let silent = options.silent;
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -116,10 +132,10 @@ fn run_repl(prompt: Option<&str>, filename: Option<&str>) -> ExitCode {
     if let Some(f) = filename {
         match load_file(f, &mut buffer) {
             Ok(LoadOutcome::Loaded(bytes)) => {
-                let _ = writeln!(out, "{bytes}");
+                emit(&mut out, &Action::Confirm(format!("{bytes}")), silent);
             }
             Ok(LoadOutcome::NewFile) => {
-                let _ = writeln!(out, "{f}: new file");
+                emit(&mut out, &Action::Confirm(format!("{f}: new file")), silent);
             }
             Err(e) => {
                 let _ = writeln!(out, "? {e}");
@@ -193,8 +209,8 @@ fn run_repl(prompt: Option<&str>, filename: Option<&str>) -> ExitCode {
             Action::ForceQuit => {
                 return exit(had_error);
             }
-            Action::PrintAndQuit(msg) => {
-                let _ = writeln!(out, "{msg}");
+            Action::ConfirmAndQuit(msg) => {
+                emit(&mut out, &Action::Confirm(msg), silent);
                 return exit(had_error);
             }
             Action::EnterInputMode => {
@@ -204,20 +220,9 @@ fn run_repl(prompt: Option<&str>, filename: Option<&str>) -> ExitCode {
             Action::Done => {
                 modified_warned = false;
             }
-            Action::Print(msg) => {
-                let _ = writeln!(out, "{msg}");
+            output => {
+                had_error |= emit(&mut out, &output, silent);
                 modified_warned = false;
-            }
-            Action::PrintThenError(output, msg) => {
-                let _ = writeln!(out, "{output}");
-                let _ = writeln!(out, "? {msg}");
-                modified_warned = false;
-                had_error = true;
-            }
-            Action::Error(msg) => {
-                let _ = writeln!(out, "? {msg}");
-                modified_warned = false;
-                had_error = true;
             }
         }
     }
@@ -227,17 +232,44 @@ fn run_repl(prompt: Option<&str>, filename: Option<&str>) -> ExitCode {
 enum Action {
     Quit,
     ForceQuit,
-    PrintAndQuit(String),
-    /// Output from a command that ran partway and then failed, as `g`
-    /// does when its command fails on one of the marked lines.
-    PrintThenError(String, String),
+    ConfirmAndQuit(String),
+    /// The results of the commands `g` ran, in order.
+    Batch(Vec<Action>),
     /// `e` on a modified buffer, carrying its argument. The loop
     /// warns the first time and runs the edit the second.
     EditModified(String),
     EnterInputMode,
     Done,
+    /// Output the user asked for, such as the lines `p` prints.
     Print(String),
+    /// What ved says about a command it carried out, such as a byte
+    /// count. `-s` suppresses these.
+    Confirm(String),
     Error(String),
+}
+
+/// Write an output action and return whether it reported an error.
+fn emit(out: &mut impl Write, action: &Action, silent: bool) -> bool {
+    match action {
+        Action::Print(msg) => {
+            let _ = writeln!(out, "{msg}");
+            false
+        }
+        Action::Confirm(msg) => {
+            if !silent {
+                let _ = writeln!(out, "{msg}");
+            }
+            false
+        }
+        Action::Error(msg) => {
+            let _ = writeln!(out, "? {msg}");
+            true
+        }
+        Action::Batch(actions) => actions
+            .iter()
+            .fold(false, |err, a| emit(out, a, silent) | err),
+        _ => false,
+    }
 }
 
 /// Dispatch a single command line.
@@ -343,7 +375,7 @@ fn dispatch(cmd: &str, buf: &mut Buffer) -> Action {
         'w' => match args.strip_prefix('q') {
             Some(file) if file.is_empty() || file.starts_with(char::is_whitespace) => {
                 match run_write(&spec, buf, file) {
-                    Action::Print(msg) => Action::PrintAndQuit(msg),
+                    Action::Confirm(msg) => Action::ConfirmAndQuit(msg),
                     other => other,
                 }
             }
@@ -451,33 +483,26 @@ fn run_global(spec: &Spec, buf: &mut Buffer, args: &str, invert: bool) -> Action
 
     // Anything else runs once per marked line, with that line current.
     // The first error stops the loop, as in ed.
-    let mut output = String::new();
+    let mut results = Vec::new();
     while let Some(n) = buf.take_mark() {
         buf.set_current(n);
         match dispatch(cmd, buf) {
-            Action::Print(msg) => {
-                if !output.is_empty() {
-                    output.push('\n');
-                }
-                output.push_str(&msg);
-            }
             Action::Error(msg) => {
                 buf.clear_marks();
-                return if output.is_empty() {
-                    Action::Error(msg)
-                } else {
-                    Action::PrintThenError(output, msg)
-                };
+                results.push(Action::Error(msg));
+                break;
             }
-            // Quit, edit and input mode don't make sense inside g.
+            result @ (Action::Print(_) | Action::Confirm(_) | Action::Batch(_)) => {
+                results.push(result)
+            }
             _ => {}
         }
     }
 
-    if output.is_empty() {
-        Action::Done
-    } else {
-        Action::Print(output)
+    match results.len() {
+        0 => Action::Done,
+        1 => results.pop().unwrap(),
+        _ => Action::Batch(results),
     }
 }
 
@@ -530,9 +555,9 @@ fn run_delete(spec: &Spec, buf: &mut Buffer) -> Action {
     let count = range.end - range.start + 1;
     buf.delete_range(range.start, range.end);
     if count == 1 {
-        Action::Print(format!("deleted line {}", range.start))
+        Action::Confirm(format!("deleted line {}", range.start))
     } else {
-        Action::Print(format!(
+        Action::Confirm(format!(
             "deleted {count} lines ({}-{})",
             range.start, range.end
         ))
@@ -551,7 +576,7 @@ fn run_join(spec: &Spec, buf: &mut Buffer) -> Action {
     };
     if range.start == range.end {
         buf.set_current(range.start);
-        return Action::Print(String::new());
+        return Action::Done;
     }
     let mut joined = String::new();
     for n in range.start..=range.end {
@@ -563,7 +588,7 @@ fn run_join(spec: &Spec, buf: &mut Buffer) -> Action {
     buf.delete_range(range.start + 1, range.end);
     buf.set_current(range.start);
     let count = range.end - range.start + 1;
-    Action::Print(format!(
+    Action::Confirm(format!(
         "joined {count} lines ({}-{}) into line {}",
         range.start, range.end, range.start
     ))
@@ -589,7 +614,7 @@ fn run_move(spec: &Spec, buf: &mut Buffer, dest_arg: &str) -> Action {
     let count = range.end - range.start + 1;
     let first = buf.move_range(range.start, range.end, dest);
     buf.set_current(first + count - 1);
-    Action::Print(format!(
+    Action::Confirm(format!(
         "moved {count} lines ({}-{}) to after {dest}",
         range.start, range.end
     ))
@@ -616,7 +641,7 @@ fn run_transfer(spec: &Spec, buf: &mut Buffer, dest_arg: &str) -> Action {
         buf.append_after(at, line);
     }
     buf.set_current(dest + count);
-    Action::Print(format!(
+    Action::Confirm(format!(
         "copied {count} lines ({}-{}) to after {dest}",
         range.start, range.end
     ))
@@ -736,8 +761,8 @@ fn run_edit(buf: &mut Buffer, args: &str) -> Action {
 
     let mut fresh = Buffer::new();
     let action = match load_file(&filename, &mut fresh) {
-        Ok(LoadOutcome::Loaded(bytes)) => Action::Print(format!("{bytes}")),
-        Ok(LoadOutcome::NewFile) => Action::Print(format!("{filename}: new file")),
+        Ok(LoadOutcome::Loaded(bytes)) => Action::Confirm(format!("{bytes}")),
+        Ok(LoadOutcome::NewFile) => Action::Confirm(format!("{filename}: new file")),
         Err(e) => return Action::Error(e),
     };
     *buf = fresh;
@@ -785,7 +810,7 @@ fn run_read(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
         buf.set_filename(filename);
     }
 
-    Action::Print(format!("{bytes}"))
+    Action::Confirm(format!("{bytes}"))
 }
 
 /// Substitute: apply a regex replacement to the addressed lines.
@@ -798,7 +823,7 @@ fn run_substitute(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
 
     let (subst, mode) = if args.is_empty() {
         match buf.last_subst() {
-            Some(last) => (last.clone(), PrintMode::Plain),
+            Some(last) => (last.clone(), None),
             None => return Action::Error("no previous substitute".to_string()),
         }
     } else {
@@ -869,7 +894,10 @@ fn run_substitute(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
         Some(n) => {
             buf.set_current(n);
             match buf.line(n) {
-                Some(line) => Action::Print(format_line(n, line, &mode)),
+                Some(line) => match mode {
+                    Some(mode) => Action::Print(format_line(n, line, &mode)),
+                    None => Action::Confirm(line.to_string()),
+                },
                 None => Action::Error("invalid address".to_string()),
             }
         }
@@ -903,7 +931,7 @@ fn scan_delimited(input: &[u8], delim: u8) -> Option<(&[u8], &[u8])> {
 /// and at most one of `p`, `l` and `n`, each at most once. A count and
 /// `g` together are an error, as in GNU ed; POSIX leaves them
 /// unspecified.
-fn parse_suffix(rest: &[u8]) -> Result<(usize, bool, PrintMode), String> {
+fn parse_suffix(rest: &[u8]) -> Result<(usize, bool, Option<PrintMode>), String> {
     let digits = rest.iter().take_while(|b| b.is_ascii_digit()).count();
     let nth = if digits == 0 {
         1
@@ -931,7 +959,7 @@ fn parse_suffix(rest: &[u8]) -> Result<(usize, bool, PrintMode), String> {
             _ => return Err(format!("unknown suffix: {}", String::from_utf8_lossy(rest))),
         }
     }
-    Ok((nth, global, mode.unwrap_or(PrintMode::Plain)))
+    Ok((nth, global, mode))
 }
 
 /// Replace matches of `re` in `text`: the `nth` match (counting from 1),
@@ -1052,7 +1080,7 @@ fn run_write(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
     if wrote_whole {
         buf.mark_saved();
     }
-    Action::Print(msg)
+    Action::Confirm(msg)
 }
 
 #[cfg(test)]
@@ -1076,7 +1104,9 @@ mod tests {
 
     #[test]
     fn parse_args_with_nothing_returns_no_prompt_or_filename() {
-        let (prompt, filename) = parse_args(&[]).unwrap();
+        let Options {
+            prompt, filename, ..
+        } = parse_args(&[]).unwrap();
         assert_eq!(prompt, None);
         assert_eq!(filename, None);
     }
@@ -1084,7 +1114,9 @@ mod tests {
     #[test]
     fn parse_args_prompt_flag_takes_the_next_arg() {
         let args = ["-p".to_string(), "custom> ".to_string()];
-        let (prompt, filename) = parse_args(&args).unwrap();
+        let Options {
+            prompt, filename, ..
+        } = parse_args(&args).unwrap();
         assert_eq!(prompt, Some("custom> ".to_string()));
         assert_eq!(filename, None);
     }
@@ -1092,14 +1124,14 @@ mod tests {
     #[test]
     fn parse_args_long_prompt_flag_is_the_same_as_short() {
         let args = ["--prompt".to_string(), "custom> ".to_string()];
-        let (prompt, _) = parse_args(&args).unwrap();
+        let Options { prompt, .. } = parse_args(&args).unwrap();
         assert_eq!(prompt, Some("custom> ".to_string()));
     }
 
     #[test]
     fn parse_args_prompt_equals_form() {
         let args = ["--prompt=custom> ".to_string()];
-        let (prompt, _) = parse_args(&args).unwrap();
+        let Options { prompt, .. } = parse_args(&args).unwrap();
         assert_eq!(prompt, Some("custom> ".to_string()));
     }
 
@@ -1118,7 +1150,9 @@ mod tests {
     #[test]
     fn parse_args_bare_word_is_a_filename() {
         let args = ["notes.txt".to_string()];
-        let (prompt, filename) = parse_args(&args).unwrap();
+        let Options {
+            prompt, filename, ..
+        } = parse_args(&args).unwrap();
         assert_eq!(prompt, None);
         assert_eq!(filename, Some("notes.txt".to_string()));
     }
@@ -1126,7 +1160,9 @@ mod tests {
     #[test]
     fn parse_args_prompt_and_filename_together() {
         let args = ["-p".to_string(), "> ".to_string(), "notes.txt".to_string()];
-        let (prompt, filename) = parse_args(&args).unwrap();
+        let Options {
+            prompt, filename, ..
+        } = parse_args(&args).unwrap();
         assert_eq!(prompt, Some("> ".to_string()));
         assert_eq!(filename, Some("notes.txt".to_string()));
     }
@@ -1167,7 +1203,7 @@ mod tests {
         let path = temp_path("write_explicit");
         let mut buf = buf_with(&["foo", "bar"]);
         let act = dispatch(&format!("w {}", path.to_str().unwrap()), &mut buf);
-        assert!(matches!(act, Action::Print(ref s) if s.contains("wrote")));
+        assert!(matches!(act, Action::Confirm(ref s) if s.contains("wrote")));
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "foo\nbar\n",
@@ -1184,7 +1220,7 @@ mod tests {
         let _ = dispatch(&format!("w {}", path.to_str().unwrap()), &mut buf);
         buf.replace_line(1, "changed".to_string());
         let act = dispatch("w", &mut buf);
-        assert!(matches!(act, Action::Print(_)));
+        assert!(matches!(act, Action::Confirm(_)));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "changed\n");
         std::fs::remove_file(&path).unwrap();
     }
@@ -1195,7 +1231,7 @@ mod tests {
         let mut buf = buf_with(&["foo"]);
         buf.set_filename(path.to_str().unwrap().to_string());
         let act = dispatch("wq", &mut buf);
-        assert!(matches!(act, Action::PrintAndQuit(ref s) if s.contains("wrote")));
+        assert!(matches!(act, Action::ConfirmAndQuit(ref s) if s.contains("wrote")));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "foo\n");
         std::fs::remove_file(&path).unwrap();
     }
@@ -1205,7 +1241,7 @@ mod tests {
         let path = temp_path("wq_named");
         let mut buf = buf_with(&["foo"]);
         let act = dispatch(&format!("wq {}", path.to_str().unwrap()), &mut buf);
-        assert!(matches!(act, Action::PrintAndQuit(_)));
+        assert!(matches!(act, Action::ConfirmAndQuit(_)));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "foo\n");
         std::fs::remove_file(&path).unwrap();
     }
@@ -1234,21 +1270,21 @@ mod tests {
         let mut buf = buf_with(&["foo"]);
         assert!(matches!(
             dispatch(&format!("write {p}"), &mut buf),
-            Action::Print(_)
+            Action::Confirm(_)
         ));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "foo\n");
         assert!(matches!(
             dispatch(&format!("read {p}"), &mut buf),
-            Action::Print(_)
+            Action::Confirm(_)
         ));
         assert_eq!(buf.len(), 2);
         assert!(matches!(
             dispatch(&format!("write {p}"), &mut buf),
-            Action::Print(_)
+            Action::Confirm(_)
         ));
         assert!(matches!(
             dispatch(&format!("edit {p}"), &mut buf),
-            Action::Print(_)
+            Action::Confirm(_)
         ));
         assert_eq!(buf.len(), 2);
         std::fs::remove_file(&path).unwrap();
@@ -1304,7 +1340,7 @@ mod tests {
         std::fs::write(&path, "x\ny\n").unwrap();
         let mut buf = buf_with(&["foo", "bar"]);
         let act = dispatch(&format!("1r {}", path.to_str().unwrap()), &mut buf);
-        assert!(matches!(act, Action::Print(_)));
+        assert!(matches!(act, Action::Confirm(_)));
         assert_eq!(buf.line(1), Some("foo"));
         assert_eq!(buf.line(2), Some("x"));
         assert_eq!(buf.line(3), Some("y"));
@@ -1336,7 +1372,7 @@ mod tests {
         let mut buf = buf_with(&["old1", "old2", "old3"]);
         buf.mark_saved();
         let act = dispatch(&format!("e {}", path.to_str().unwrap()), &mut buf);
-        assert!(matches!(act, Action::Print(_)));
+        assert!(matches!(act, Action::Confirm(_)));
         assert_eq!(buf.len(), 2);
         assert_eq!(buf.line(1), Some("new1"));
         assert_eq!(buf.line(2), Some("new2"));
@@ -1359,7 +1395,7 @@ mod tests {
         let mut buf = buf_with(&["old1"]);
         buf.mark_saved();
         let act = dispatch(&format!("e {}", path.to_str().unwrap()), &mut buf);
-        assert!(matches!(act, Action::Print(ref s) if s.contains("new file")));
+        assert!(matches!(act, Action::Confirm(ref s) if s.contains("new file")));
         assert!(buf.is_empty());
     }
 
@@ -1482,7 +1518,7 @@ mod tests {
         let mut buf = Buffer::new();
         load_file(path.to_str().unwrap(), &mut buf).unwrap();
         assert_eq!(buf.line(1), Some("one\r"));
-        assert!(matches!(dispatch("w", &mut buf), Action::Print(_)));
+        assert!(matches!(dispatch("w", &mut buf), Action::Confirm(_)));
         assert_eq!(std::fs::read(&path).unwrap(), b"one\r\ntwo\r\n");
         std::fs::remove_file(&path).unwrap();
     }
@@ -1508,7 +1544,7 @@ mod tests {
         std::fs::write(&path, "new\n").unwrap();
         let mut buf = buf_with(&["unsaved"]);
         let act = dispatch(&format!("E {}", path.to_str().unwrap()), &mut buf);
-        assert!(matches!(act, Action::Print(_)));
+        assert!(matches!(act, Action::Confirm(_)));
         assert_eq!(buf.line(1), Some("new"));
         std::fs::remove_file(&path).unwrap();
     }
@@ -1580,7 +1616,7 @@ mod tests {
         let mut buf = buf_with(&["foo", "bar", "baz"]);
         buf.set_current(1);
         let act = dispatch("j", &mut buf);
-        assert!(matches!(act, Action::Print(_)));
+        assert!(matches!(act, Action::Confirm(_)));
         assert_eq!(buf.len(), 2);
         assert_eq!(buf.line(1), Some("foobar"));
         assert_eq!(buf.line(2), Some("baz"));
@@ -1591,7 +1627,7 @@ mod tests {
     fn join_range_concatenates_all_lines() {
         let mut buf = buf_with(&["a", "b", "c", "d", "e"]);
         let act = dispatch("2,4j", &mut buf);
-        assert!(matches!(act, Action::Print(_)));
+        assert!(matches!(act, Action::Confirm(_)));
         assert_eq!(buf.len(), 3);
         assert_eq!(buf.line(2), Some("bcd"));
         assert_eq!(buf.line(3), Some("e"));
@@ -1602,11 +1638,7 @@ mod tests {
     fn join_single_line_is_silent_noop() {
         let mut buf = buf_with(&["one", "two", "three"]);
         let act = dispatch("2j", &mut buf);
-        if let Action::Print(s) = act {
-            assert!(s.is_empty());
-        } else {
-            panic!("expected silent Print on single-line join");
-        }
+        assert!(matches!(act, Action::Done));
         assert_eq!(buf.len(), 3);
         assert_eq!(buf.line(2), Some("two"));
         assert_eq!(buf.current(), 2);
@@ -1652,7 +1684,7 @@ mod tests {
     fn delete_single_line_reports_singular_message() {
         let mut buf = buf_with(&["a", "b", "c"]);
         let act = dispatch("2d", &mut buf);
-        assert!(matches!(act, Action::Print(ref s) if s == "deleted line 2"));
+        assert!(matches!(act, Action::Confirm(ref s) if s == "deleted line 2"));
         assert_eq!(buf.len(), 2);
         assert_eq!(buf.line(1), Some("a"));
         assert_eq!(buf.line(2), Some("c"));
@@ -1662,7 +1694,7 @@ mod tests {
     fn delete_range_reports_count_and_bounds() {
         let mut buf = buf_with(&["a", "b", "c", "d"]);
         let act = dispatch("2,3d", &mut buf);
-        assert!(matches!(act, Action::Print(ref s) if s == "deleted 2 lines (2-3)"));
+        assert!(matches!(act, Action::Confirm(ref s) if s == "deleted 2 lines (2-3)"));
         assert_eq!(buf.len(), 2);
     }
 
@@ -1680,7 +1712,12 @@ mod tests {
     fn global_runs_print_on_every_matching_line() {
         let mut buf = buf_with(&["foo", "bar", "foo2"]);
         let act = dispatch("g/foo/p", &mut buf);
-        assert!(matches!(act, Action::Print(ref s) if s == "foo\nfoo2"));
+        let Action::Batch(results) = act else {
+            panic!("expected one result per matching line");
+        };
+        assert!(
+            matches!(&results[..], [Action::Print(a), Action::Print(b)] if a == "foo" && b == "foo2")
+        );
     }
 
     #[test]
@@ -1904,7 +1941,7 @@ mod tests {
         // Unlike m, t can target inside the source range.
         let mut buf = buf_with(&["a", "b", "c", "d"]);
         let act = dispatch("1,3t2", &mut buf);
-        assert!(matches!(act, Action::Print(_)));
+        assert!(matches!(act, Action::Confirm(_)));
         assert_eq!(buf.len(), 7);
     }
 
@@ -1926,7 +1963,7 @@ mod tests {
     #[test]
     fn substitute_without_its_closing_delimiter_runs_to_the_end_of_the_line() {
         let mut buf = buf_with(&["abc"]);
-        assert!(matches!(dispatch("s/a/b", &mut buf), Action::Print(ref l) if l == "bbc"));
+        assert!(matches!(dispatch("s/a/b", &mut buf), Action::Confirm(ref l) if l == "bbc"));
         let mut buf = buf_with(&["abc"]);
         dispatch("s/b/", &mut buf);
         assert_eq!(buf.line(1), Some("ac"));
@@ -1938,7 +1975,13 @@ mod tests {
     fn substitute_count_replaces_only_that_match() {
         for (cmd, want) in [("s/a/X/2", "aXa"), ("s/a/X/3", "aaX"), ("s/a/X/2p", "aXa")] {
             let mut buf = buf_with(&["aaa"]);
-            assert!(matches!(dispatch(cmd, &mut buf), Action::Print(_)), "{cmd}");
+            assert!(
+                matches!(
+                    dispatch(cmd, &mut buf),
+                    Action::Print(_) | Action::Confirm(_)
+                ),
+                "{cmd}"
+            );
             assert_eq!(buf.line(1), Some(want), "{cmd}");
         }
         let mut buf = buf_with(&["aaa"]);

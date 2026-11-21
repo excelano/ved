@@ -93,3 +93,33 @@ fn end_of_input_on_a_saved_buffer_exits_quietly() {
     assert_eq!(r.status, 0);
     assert_eq!(r.file, "one\nX\n");
 }
+
+#[test]
+fn script_flag_prints_only_what_the_script_asks_for() {
+    let r = run(&["-s"], "hello\n", ",p\nd\nw\nq\n");
+    assert_eq!(r.stdout, "hello\n");
+    assert_eq!(r.file, "");
+}
+
+#[test]
+fn script_flag_keeps_s_quiet_unless_it_has_a_print_suffix() {
+    let r = run(&["-s"], "aaa\n", "s/a/X/\ns/a/Y/p\nw\nq\n");
+    assert_eq!(r.stdout, "XYa\n");
+    assert_eq!(r.file, "XYa\n");
+}
+
+#[test]
+fn script_flag_still_reports_errors() {
+    let r = run(&["-s"], "one\n", "zz\nq\n");
+    assert_eq!(r.stdout, "? unknown command: zz\n");
+    assert_eq!(r.status, 1);
+}
+
+#[test]
+fn without_the_script_flag_ved_confirms_each_command() {
+    let r = run(&[], "hello\n", ",p\nd\nw\nq\n");
+    assert_eq!(
+        r.stdout,
+        "6\nhello\ndeleted line 1\nwrote 0 bytes to f.txt\n"
+    );
+}
