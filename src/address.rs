@@ -221,10 +221,10 @@ fn parse_one(input: &str) -> Result<(Option<Address>, &str), String> {
 }
 
 /// Scan a `delim`-terminated search pattern starting right after the
-/// opening delimiter. Handles backslash escapes the same way
-/// `scan_delimited` in main.rs does for substitute patterns: an
-/// escaped delimiter becomes a literal delimiter, other escapes pass
-/// through unchanged for the regex engine to interpret.
+/// opening delimiter. An escaped delimiter becomes a literal
+/// delimiter, which is safe because the only search delimiters, `/`
+/// and `?`, mean nothing to a BRE; other escapes pass through
+/// unchanged for the regex engine to interpret.
 ///
 /// The closing delimiter may be omitted if the pattern runs to the
 /// end of the line (`/foo` with no trailing `/`), matching ed: the

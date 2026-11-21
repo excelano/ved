@@ -395,7 +395,7 @@ fn run_global(spec: &Spec, buf: &mut Buffer, args: &str, invert: bool) -> Action
     let cmd = if cmd.is_empty() { "p" } else { cmd };
 
     // Compile the regex.
-    let re = bre::Regex::compile(&pattern);
+    let re = bre::Regex::compile(pattern);
 
     // Resolve the address range (default: whole buffer).
     let range = match spec.resolve_or_whole(buf) {
@@ -799,8 +799,8 @@ fn run_substitute(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
         };
 
         let global = rest.contains(&b'g');
-        buf.set_last_subst(pattern.clone(), replacement.clone(), global);
-        (pattern, replacement, global)
+        buf.set_last_subst(pattern.to_vec(), replacement.to_vec(), global);
+        (pattern.to_vec(), replacement.to_vec(), global)
     };
 
     // Compile the pattern.
@@ -851,34 +851,26 @@ fn run_substitute(spec: &Spec, buf: &mut Buffer, args: &str) -> Action {
     }
 }
 
-/// Scan a delimiter-terminated field, handling backslash escapes.
-/// Returns the field content (with escapes preserved for the BRE
-/// engine) and the remainder after the closing delimiter.
-fn scan_delimited(input: &[u8], delim: u8) -> Option<(Vec<u8>, &[u8])> {
-    let mut result = Vec::new();
+/// Split `input` at the first unescaped `delim`, returning the field
+/// before it and the rest after it, or None if there is no closing
+/// delimiter. Escapes are skipped, not interpreted: `\.` stays `\.`,
+/// so the pattern compiler and the replacement expander, which know
+/// what an escape means, see what the user typed. An escaped delimiter
+/// reaches them as backslash-delimiter, which both read as the literal
+/// character.
+fn scan_delimited(input: &[u8], delim: u8) -> Option<(&[u8], &[u8])> {
     let mut i = 0;
     while i < input.len() {
         if input[i] == delim {
-            return Some((result, &input[i + 1..]));
+            return Some((&input[..i], &input[i + 1..]));
         }
         if input[i] == b'\\' && i + 1 < input.len() {
-            if input[i + 1] == delim {
-                // Escaped delimiter: include just the delimiter
-                result.push(delim);
-                i += 2;
-            } else {
-                // Other escape: pass through as-is for the BRE
-                // engine or replacement expander to interpret.
-                result.push(input[i]);
-                result.push(input[i + 1]);
-                i += 2;
-            }
+            i += 2;
         } else {
-            result.push(input[i]);
             i += 1;
         }
     }
-    None // no closing delimiter found
+    None
 }
 
 /// Replace the first match in `text`. Returns None if no match.
@@ -1394,6 +1386,26 @@ mod tests {
         let mut empty = Buffer::new();
         assert!(matches!(dispatch("a", &mut empty), Action::EnterInputMode));
         assert!(matches!(dispatch("1a", &mut empty), Action::Error(_)));
+    }
+
+    #[test]
+    fn an_escaped_delimiter_is_the_literal_character() {
+        // Each case: line, command, result. Expected values are GNU
+        // ed's output for the same input.
+        for (line, cmd, want) in [
+            ("a.b", "s.a\\..X.", "Xb"),
+            ("x*y", "s*x\\*y*Z*", "Z"),
+            ("abc", "s&a&\\&&", "&bc"),
+            ("a/b", "s/\\//-/", "a-b"),
+            ("abc", "s/b/\\n/", "anc"),
+        ] {
+            let mut buf = buf_with(&[line]);
+            dispatch(cmd, &mut buf);
+            assert_eq!(buf.line(1), Some(want), "{cmd} on {line}");
+        }
+        let mut buf = buf_with(&["axb"]);
+        assert!(matches!(dispatch("s.a\\..X.", &mut buf), Action::Error(_)));
+        assert_eq!(buf.line(1), Some("axb"));
     }
 
     #[test]

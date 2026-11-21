@@ -494,6 +494,7 @@ fn atom_width(atom: &Atom, text: &[u8]) -> Option<usize> {
 ///   - `\1`-`\9` are replaced with captured group contents
 ///   - `\&` is a literal ampersand
 ///   - `\\` is a literal backslash
+///   - `\` before any other character is that character
 ///   - Everything else is literal
 pub fn expand_replacement(replacement: &[u8], m: &Match, text: &[u8]) -> Vec<u8> {
     let mut result = Vec::new();
@@ -535,9 +536,11 @@ pub fn expand_replacement(replacement: &[u8], m: &Match, text: &[u8]) -> Vec<u8>
                         }
                         i += 2;
                     }
-                    _ => {
-                        result.push(replacement[i]);
-                        i += 1;
+                    // Any other escaped character is that character,
+                    // as in ed: `\/` is a slash, `\n` is an n.
+                    c => {
+                        result.push(c);
+                        i += 2;
                     }
                 }
             }
