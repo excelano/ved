@@ -164,6 +164,10 @@ fn run_repl(prompt: Option<&str>, filename: Option<&str>) -> ExitCode {
             Action::ForceQuit => {
                 return ExitCode::SUCCESS;
             }
+            Action::PrintAndQuit(msg) => {
+                let _ = writeln!(out, "{msg}");
+                return ExitCode::SUCCESS;
+            }
             Action::EnterInputMode => {
                 input_mode = true;
                 quit_warned = false;
@@ -190,6 +194,7 @@ fn run_repl(prompt: Option<&str>, filename: Option<&str>) -> ExitCode {
 enum Action {
     Quit,
     ForceQuit,
+    PrintAndQuit(String),
     EnterInputMode,
     Done,
     Print(String),
@@ -306,7 +311,15 @@ fn dispatch(cmd: &str, buf: &mut Buffer) -> Action {
         'g' => run_global(&spec, buf, args, false),
         'v' => run_global(&spec, buf, args, true),
         's' => run_substitute(&spec, buf, args),
-        'w' => run_write(&spec, buf, args),
+        'w' => match args.strip_prefix('q') {
+            Some(file) if file.is_empty() || file.starts_with(char::is_whitespace) => {
+                match run_write(&spec, buf, file) {
+                    Action::Print(msg) => Action::PrintAndQuit(msg),
+                    other => other,
+                }
+            }
+            _ => run_write(&spec, buf, args),
+        },
         'm' => run_move(&spec, buf, args),
         't' => run_transfer(&spec, buf, args),
         _ => Action::Error(format!("unknown command: {rest}")),
@@ -1065,6 +1078,34 @@ mod tests {
         assert!(matches!(act, Action::Print(_)));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "changed\n");
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn wq_writes_the_remembered_file_and_quits() {
+        let path = temp_path("wq_remembered");
+        let mut buf = buf_with(&["foo"]);
+        buf.set_filename(path.to_str().unwrap().to_string());
+        let act = dispatch("wq", &mut buf);
+        assert!(matches!(act, Action::PrintAndQuit(ref s) if s.contains("wrote")));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "foo\n");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn wq_with_a_filename_writes_that_file_and_quits() {
+        let path = temp_path("wq_named");
+        let mut buf = buf_with(&["foo"]);
+        let act = dispatch(&format!("wq {}", path.to_str().unwrap()), &mut buf);
+        assert!(matches!(act, Action::PrintAndQuit(_)));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "foo\n");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn wq_that_cannot_write_does_not_quit() {
+        let mut buf = buf_with(&["foo"]);
+        let act = dispatch("wq", &mut buf);
+        assert!(matches!(act, Action::Error(_)));
     }
 
     #[test]
