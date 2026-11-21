@@ -103,6 +103,14 @@ fn run_repl(prompt: Option<&str>, filename: Option<&str>) -> ExitCode {
     // second `q` or `e` straight after it goes ahead; any other command
     // in between resets it.
     let mut modified_warned = false;
+    let mut had_error = false;
+    let exit = |had_error: bool| {
+        if had_error {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        }
+    };
 
     // If a filename was given on the command line, load it.
     if let Some(f) = filename {
@@ -115,6 +123,7 @@ fn run_repl(prompt: Option<&str>, filename: Option<&str>) -> ExitCode {
             }
             Err(e) => {
                 let _ = writeln!(out, "? {e}");
+                had_error = true;
             }
         }
     }
@@ -131,7 +140,7 @@ fn run_repl(prompt: Option<&str>, filename: Option<&str>) -> ExitCode {
 
         line.clear();
         match reader.read_line(&mut line) {
-            Ok(0) => return ExitCode::SUCCESS, // EOF
+            Ok(0) => return exit(had_error),
             Ok(_) => {}
             Err(e) => {
                 eprintln!("ved: read error: {e}");
@@ -161,21 +170,23 @@ fn run_repl(prompt: Option<&str>, filename: Option<&str>) -> ExitCode {
             Action::EditModified(_) => {
                 let _ = writeln!(out, "? warning: buffer modified");
                 modified_warned = true;
+                had_error = true;
             }
             Action::Quit => {
                 if buffer.is_modified() && !modified_warned {
                     let _ = writeln!(out, "? warning: buffer modified");
                     modified_warned = true;
+                    had_error = true;
                 } else {
-                    return ExitCode::SUCCESS;
+                    return exit(had_error);
                 }
             }
             Action::ForceQuit => {
-                return ExitCode::SUCCESS;
+                return exit(had_error);
             }
             Action::PrintAndQuit(msg) => {
                 let _ = writeln!(out, "{msg}");
-                return ExitCode::SUCCESS;
+                return exit(had_error);
             }
             Action::EnterInputMode => {
                 input_mode = true;
@@ -192,13 +203,12 @@ fn run_repl(prompt: Option<&str>, filename: Option<&str>) -> ExitCode {
                 let _ = writeln!(out, "{output}");
                 let _ = writeln!(out, "? {msg}");
                 modified_warned = false;
+                had_error = true;
             }
             Action::Error(msg) => {
-                // ved's friendly-error format. Slice 9 will route
-                // every error path through this variant and may add
-                // an H toggle to suppress the message like real ed.
                 let _ = writeln!(out, "? {msg}");
                 modified_warned = false;
+                had_error = true;
             }
         }
     }
